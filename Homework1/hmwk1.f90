@@ -49,6 +49,7 @@ MODULE  hmwks
 
         print *, "HOMEWORK 2"
         write (*,*) "For what value of 'x' (between 0 and 1) do you want e^x?"
+        flush(6)
         read(*,*) x
 
         !error checking
@@ -74,10 +75,13 @@ MODULE  hmwks
 
         print *, "HOMEWORK 3: Solving sin(2*Pi*x)-2x=0"
         write(*,*) "Starting Lower Bound: "
+        flush(6)
         read (*,*) lower
         write(*,*) "Starting Upper Bound: "
+        flush(6)
         read (*,*) upper
         write(*,*) "Allowable error (in decimal form): "
+        flush(6)
         read (*,*) sens
 
         DO WHILE ((ABS(eps) >= sens) .AND. (counter < MAXCOUNT))
