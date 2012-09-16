@@ -24,4 +24,11 @@
 		<nature>org.eclipse.cdt.managedbuilder.core.managedBuildNature</nature>
 		<nature>org.eclipse.cdt.managedbuilder.core.ScannerConfigNature</nature>
 	</natures>
+	<linkedResources>
+		<link>
+			<name>GDPDataV2.xlsx</name>
+			<type>1</type>
+			<location>C:/Users/arun/SkyDrive/git/8185Victor/Homework1/GDPDataV2.xlsx</location>
+		</link>
+	</linkedResources>
 </projectDescription>
