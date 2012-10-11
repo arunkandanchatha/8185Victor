@@ -59,6 +59,7 @@ MODULE  endogenousGrid
 
     real (DP), parameter :: toler   = 1e-6                      ! Numerical tolerance
     real (DP) :: step
+    integer :: i1
 
     private :: sub_myinterp1, sub_kendogenousnewton
 
@@ -191,7 +192,7 @@ contains
         real(DP), dimension (:,:), intent(out) :: pi , picum
         real(DP), dimension (:), intent(out) :: y
 
-        integer :: yc, tc, tcc, n
+        integer :: yc, tc, tcc, n, i1
 
         real(DP) :: sigy, mu, upp, low, temp, temp2
 
@@ -239,7 +240,6 @@ contains
             pi(tc,n) = 1.0-temp
 
             do tcc = 2, n-1
-
                 low = (y(tcc-1)+y(tcc))/2.0
                 upp = (y(tcc+1)+y(tcc))/2.0
                 low = (low-mu)/sigma
@@ -258,40 +258,97 @@ contains
         do tc = 2,n
             picum(:,tc)=picum(:,tc-1)+pi(:,tc)
         enddo
+
+        open(unit=98,file='Tauchen.txt')
+        write(98,*) 'rho, sigma, n'
+        write(98,*) rho, sigma, n
+        write(98,*) 'Income States'
+        write(98,*) y(1:n)
+        write(98,*) 'Transition Matrix'
+
+        do tc=1,n
+            write(98,*) pi(tc,:)
+        end do
+
+        write(98,*) 'Transition Matrix CDF'
+
+        do tc=1,n
+            write(98,*) picum(tc,:)
+        end do
+
+        close(98)
+
+        open(unit=16,   file='transition.txt', status = 'replace')
+        write (16, '(41f20.10)') (pi(i1, :), i1 = 1,n)
+        close(16)
+
+
+
     end subroutine sub_tauchen
 
-    SUBROUTINE sub_grid_generation(x,xcentre,xbounds,s)
-        ! Purpose: Generate grid x on [xcentre*(1-xbounds),xcentre*(1+xbounds)] using spacing parameter s set as follows:
-        ! s=1       linear spacing
-        ! s>1       left skewed grid spacing with power s
-        ! 0<s<1     right skewed grid spacing with power s
-        ! s<0       geometric spacing with distances changing by a factor -s^(1/(n-1)), (>1 grow, <1 shrink)
-        ! s=-1      logarithmic spacing with distances changing by a factor (xmax-xmin+1)^(1/(n-1))
-        ! s=0       logarithmic spacing with distances changing by a factor (xmax/xmin)^(1/(n-1)), only if xmax,xmin>0
-        IMPLICIT NONE
-        REAL(DP), DIMENSION(:), INTENT(OUT) :: x
-        REAL(DP), INTENT(IN) :: xcentre,xbounds, s
-        REAL(DP) :: c ! growth rate of grid subintervals for logarithmic spacing
-        REAL(DP) :: xmax, xmin
-        INTEGER :: n,i
+    !    SUBROUTINE sub_grid_generation(x,xcentre,xbounds,s)
+            ! Purpose: Generate grid x on [xcentre*(1-xbounds),xcentre*(1+xbounds)] using spacing parameter s set as follows:
+            ! s=1       linear spacing
+            ! s>1       left skewed grid spacing with power s
+            ! 0<s<1     right skewed grid spacing with power s
+            ! s<0       geometric spacing with distances changing by a factor -s^(1/(n-1)), (>1 grow, <1 shrink)
+            ! s=-1      logarithmic spacing with distances changing by a factor (xmax-xmin+1)^(1/(n-1))
+            ! s=0       logarithmic spacing with distances changing by a factor (xmax/xmin)^(1/(n-1)), only if xmax,xmin>0
+    !        IMPLICIT NONE
+    !       REAL(DP), DIMENSION(:), INTENT(OUT) :: x
+    !        REAL(DP), INTENT(IN) :: xcentre,xbounds, s
+    !        REAL(DP) :: c ! growth rate of grid subintervals for logarithmic spacing
+    !        REAL(DP) :: xmax, xmin
+    !        INTEGER :: n,i
+    !
+    !        n=size(x)
+    !        xmax=xcentre*(1+xbounds);
+    !        xmin=xcentre*(1-xbounds);
+    !
+    !
+    !        FORALL(i=1:n) x(i)=(i-1)/real(n-1,WP)
+    !        IF (s>0.0_WP) THEN
+    !            x=x**s*(xmax-xmin)+xmin
+    !        ELSE
+    !            IF (s==-1.0_WP) THEN
+    !                c=xmax-xmin+1
+    !            ELSE
+    !                c=-s
+    !            END IF
+    !            x=((xmax-xmin)/(c-1))*(c**x)-((xmax-c*xmin)/(c-1))
+    !        END IF
+    !    END SUBROUTINE sub_grid_generation
 
-        n=size(x)
-        xmax=xcentre*(1+xbounds);
-        xmin=xcentre*(1-xbounds);
+    !subroutine sub_grid_generation(cover,length_grid_k,k_ss,grid_k)
+    subroutine sub_grid_generation(grid_k, k_ss, cover)
+
+        implicit none
 
 
-        FORALL(i=1:n) x(i)=(i-1)/real(n-1,WP)
-        IF (s>0.0_WP) THEN
-            x=x**s*(xmax-xmin)+xmin
-        ELSE
-            IF (s==-1.0_WP) THEN
-                c=xmax-xmin+1
-            ELSE
-                c=-s
-            END IF
-            x=((xmax-xmin)/(c-1))*(c**x)-((xmax-c*xmin)/(c-1))
-        END IF
-    END SUBROUTINE sub_grid_generation
+        real(dp), intent(in) :: cover, k_ss
+        real(dp), dimension(:), intent(out) :: grid_k
+
+        integer :: index_grid
+        integer :: length_grid_k
+
+        length_grid_k = size(grid_k)
+        grid_k(1) = (1-cover)*k_ss
+        step = 2.d0*cover*k_ss/(length_grid_k-1.d0)
+
+        do i1 = 2, length_grid_k
+            grid_k(i1) = grid_k(i1-1)+step
+        enddo
+
+        print *,' '
+        print*, 'Grid generated with ',length_grid_k,'grid points with step size of', step
+        print *, 'and coverage of +-', cover*100, 'percent'
+        print *,' '
+
+        open(unit=11, file='grid_k.txt', status = 'replace')
+        write (11, '(f20.10)') (grid_k(i1), i1 = 1,length_grid_k)
+        close(11)
+
+    end subroutine sub_grid_generation
 
     subroutine sub_myinterp1(x,f_x,xp,length_x,interp_value)
 
@@ -422,12 +479,12 @@ contains
             cih(index_k,index_z)=exp(y(index_z))*grid_k(index_k)**alpha+(1-delta)*grid_k(index_k)
         end forall
 
-        !Here we start the iterations.
+            !Here we start the iterations.
 
-        iter=0
-        diff=1
+        print *,"starting iterations"
+        flush(6)
+        do while((diff>toler) .and. (iter<2000))
 
-        do while(diff>toler)
             iter=iter+1
 
             !Compute the derivatives of Vtilda at the grid points only.
@@ -459,7 +516,10 @@ contains
 
             diff = maxval(abs(value1-valuefn))
             valuefn=value1
-            if (mod(iter,50)==0) print *, 'Iteration: ', iter, 'Tolerance ', diff
+            if (mod(iter,50)==0) then
+                print *, 'Iteration: ', iter, 'Tolerance ', diff
+                flush(6)
+            end if
         enddo
 
         ! At this point the program recovers the endogenous grid for capital.
@@ -499,7 +559,7 @@ program main
     real(DP), allocatable, dimension(:,:)  :: transition, transitioncdf, valuefn, g_k, g_c
     real(DP), allocatable, dimension(:)  :: y, grid_k
 
-    integer :: index_k, length_grid_k, i1
+    integer :: index_k, length_grid_k
 
     real(DP) :: k_ss, c_ss, y_ss
     real(DP) :: cover, cover_tauchen, step1, valueinitial
@@ -533,6 +593,7 @@ program main
     print *, ' '
     print *, 'For the stochastic shock, Tauchen`s approximation method with', n_tauchen , 'points will be used.'
     print *, ' '
+    flush(6)
 
     !----------------------------------------------------------------
     ! 3. Endogenous Grid algorithm
@@ -547,7 +608,8 @@ program main
     allocate(g_k(length_grid_k,n_tauchen))
     allocate(g_c(length_grid_k,n_tauchen))
 
-    call sub_grid_generation(grid_k, k_ss, cover, 2.D0)
+    !    call sub_grid_generation(grid_k, k_ss, cover, 2.D0)
+    call sub_grid_generation(grid_k, k_ss, cover)
 
     !
     ! This is the initial increasing guess for the value function.
