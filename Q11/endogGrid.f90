@@ -30,12 +30,139 @@ MODULE nrtype
     END TYPE sprs2_dp
 END MODULE nrtype
 
+! This module specifies the model. Two samples are given here:
+!     1) Endogenous growth model with no labour
+!     2) Endogenous growth model with labour
+!
+! USAGE: This module is required for the endogenousGrid module defined below.
+!        You must specify all subroutines defined below
+module modelDefinition
+    use nrtype
+    implicit none
+
+contains
+
+subroutine steadystate(inputVars, outputVars)
+        ! This subroutine contains the calculations for steady state values.
+        !
+        ! INPUTS: inputVars - a vector of input values.
+        ! OUTPUTS: outputVars - a vector of output values.
+        !
+        ! Note: To pass arrays, see the initValueFn subroutine below
+    implicit none
+
+    !----------------------------------------------------------------
+    ! 1. Computation of the Steady State
+    !----------------------------------------------------------------
+    real(DP), dimension(:), INTENT(IN) :: inputVars
+    real(DP), dimension(:), INTENT(OUT) :: outputVars
+
+#ifdef HAS_LABOUR
+    real(DP) :: alpha, beta, delta, theta
+    real(DP) :: k_ss, l_ss, c_ss, r_ss, y_ss
+    real(DP) :: phi, omega, big_phi
+
+    alpha = inputVars(1)
+    beta = inputVars(2)
+    delta = inputVars(3)
+    theta = inputVars(4)
+
+    phi     = (1/alpha*(1/beta-1+delta))**(1/(1-alpha))
+    omega   = (phi**(1-alpha)-delta)
+    big_phi = theta/(1-theta)*(1-alpha)*phi**(-alpha)
+
+    k_ss = big_phi/(omega+phi*big_phi)
+    l_ss = phi*k_ss
+    c_ss = omega*k_ss
+    r_ss = alpha*(k_ss**(alpha-1))*(l_ss**(1-alpha))
+    y_ss = k_ss**alpha*(l_ss**(1-alpha))
+
+    outputVars(1) = y_ss
+    outputVars(2) = c_ss
+    outputVars(3) = k_ss
+    outputVars(4) = l_ss
+    outputVars(5) = r_ss
+
+    print *, 'Steady State values'
+    print *, 'Output: ', y_ss, 'Capital: ', k_ss, 'Labor: ', l_ss
+
+#else
+    real(DP) :: alpha, beta, delta
+    real(DP) :: k_ss, c_ss, y_ss
+
+    alpha = inputVars(1)
+    beta = inputVars(2)
+    delta = inputVars(3)
+
+    k_ss = ((1/beta-1+delta)/alpha)**(1/(alpha-1))
+    y_ss = k_ss**alpha
+    c_ss = k_ss**alpha-delta*k_ss
+    outputVars(1) = y_ss
+    outputVars(2) = c_ss
+    outputVars(3) = k_ss
+
+    print *, 'Steady State values'
+    print *, 'Output: ', y_ss, 'Capital: ', k_ss
+
+#endif
+
+end subroutine steadystate
+
+subroutine initValueFn(inputVars, outputVars)
+        ! This subroutine contains the calculations to initialize the initial guess of an increasing
+        ! value function.
+        !
+        ! INPUTS: inputVars - a vector of input values.
+        ! OUTPUTS: outputVars - a vector (which is actually a linearized matrix) representing the value function
+        !
+        ! Note: To pass arrays, see the initValueFn subroutine below
+    implicit none
+
+    real(DP), dimension(:), INTENT(IN) :: inputVars
+    real(DP), dimension(:), INTENT(OUT) :: outputVars
+
+#ifdef HAS_LABOUR
+    real(DP) :: beta, c_ss, tau, step1, valueinitial, l_ss, theta
+    integer :: index_k, i1, m, n
+
+    beta = inputVars(1)
+    c_ss=inputVars(2)
+    tau=inputVars(3)
+    step1 = inputVars(4)
+    l_ss = inputVars(5)
+    theta = inputVars(6)
+    m = inputVars(7)
+    n = inputVars(8)
+
+    valueinitial = (1/(1-beta))*((c_ss**theta*(1-l_ss)**theta)**(1-tau))/(1-tau)
+    forall (index_k = 1:m, i1=1:n) outputVars((index_k-1)*n+i1) = index_k/step1 + valueinitial
+
+#else
+    real(DP) :: beta, c_ss, tau, step1, valueinitial
+    integer :: index_k, i1
+
+    beta = inputVars(1)
+    c_ss=inputVars(2)
+    tau=inputVars(3)
+    step1 = inputVars(4)
+    m = inputVars(5)
+    n = inputVars(6)
+
+    valueinitial = (1/(1-beta))*c_ss**(1-tau)/(1-tau)
+
+    forall (index_k = 1:m, i1=1:n) outputVars((index_k-1)*n+i1) = index_k/step1 + valueinitial
+#endif
+
+end subroutine initValueFn
+END MODULE modelDefinition
+
 ! This module contains everything we neeed to perform a value function interation using the endogenous
 ! grid method. The main program below gives an example of usage.
 !
-! USAGE:
+! USAGE: You must define all the routines in the modelDefinition module above.
 MODULE  endogenousGrid
     use nrtype
+    use modelDefinition
     implicit none
 
 
@@ -47,6 +174,7 @@ MODULE  endogenousGrid
     real (DP), parameter :: alpha  = 0.4                            ! Capital Share
     real (DP), parameter :: tau    = 2.d0                           ! risk aversion
     real (DP), parameter :: beta   = 0.9896                         ! Discount factor
+    real (DP), parameter :: theta   = 0.357                         ! weight on consumption
     real (DP), parameter :: rho    = 0.95                           ! Autoregressive
     real (DP), parameter :: sigma  = 0.007                          ! Variance
 
@@ -58,11 +186,12 @@ MODULE  endogenousGrid
     integer :: Tsimul    = 50000                                ! Number of simulations for the EEerror
 
     real (DP), parameter :: toler   = 1e-6                      ! Numerical tolerance
+    integer, parameter :: MAX_ITER = 5000                       ! max number of iterations for convergence
     real (DP), allocatable, dimension (:) :: stepVec
     integer :: i1
 
     private :: sub_myinterp1, sub_kendogenousnewton
-    private :: i1, toler
+    private :: i1
 
 contains
 
@@ -362,6 +491,30 @@ contains
 
     end subroutine sub_myinterp1
 
+    subroutine sub_myinterp3(x,f_x,length_index,xp,interp_value)
+
+        implicit none
+
+        integer, intent(in) :: length_index
+
+        real (dp), dimension(length_index), intent(in) :: x
+        real (dp), dimension(length_index, n_tauchen), intent(in) :: f_x
+        real (dp), intent(in) :: xp
+        real (dp), dimension(n_tauchen), intent(out) :: interp_value
+
+        real (dp), dimension(n_tauchen) :: t
+
+        if (xp>x(2) .and. length_index == 3) then
+            t = (f_x(3,:)-f_x(2,:))/(x(3)-x(2))
+            interp_value = t*(xp-x(2))+f_x(2,:)
+        else
+            t = (f_x(2,:)-f_x(1,:))/(x(2)-x(1))
+            interp_value = t*(xp-x(1))+f_x(1,:)
+        endif
+
+    end subroutine sub_myinterp3
+
+
     subroutine sub_kendogenousnewton(kend,Yend,z,kguess)
 
         implicit none
@@ -383,11 +536,255 @@ contains
             f_kp = -alpha*exp(z)*kend**(alpha-1)-(1-delta)
             kp = kend-(f_k/f_kp)
 
-            if (abs(kp-kend)<0.0000001) go_on = 0
+            if (abs(kp-kend)<toler) go_on = 0
             kend = kp
         enddo
 
     end subroutine sub_kendogenousnewton
+
+subroutine sub_kendogenousnewton2(kend,z,labor,Cstar,kprime)
+
+    implicit none
+
+    real(dp), intent(in) :: z,labor,Cstar,kprime
+    real(dp), intent(out) :: kend
+
+    integer :: go_on
+
+    real(dp) :: f_k, f_kp, kp
+
+    !Uses as initial guess the value of capital tomorrow.
+    kend=kprime
+
+    go_on = 1
+    do while (go_on == 1)
+
+        f_k  = kprime + Cstar-exp(z)*kend**alpha*labor**(1-alpha)-(1-delta)*kend
+        f_kp = -alpha*exp(z)*kend**(alpha-1)*labor**(1-alpha)-(1-delta)
+        kp = kend-(f_k/f_kp)
+
+        if (abs(kp-kend)<toler) go_on = 0
+        kend = kp
+    enddo
+
+end subroutine sub_kendogenousnewton2
+
+subroutine sub_valueend1(valuefn,grid_k,length_grid_k,y,transition,l_ss)
+                ! The actual value iteration function when we have labour
+                ! INPUTS: valuefn - The initial guess of the value function, size m-by-n
+                !         grid_k - grid of possible capital values (..,ks,..), size m
+                !         length_grid_k - basically, m
+                !         y - the income states - size n
+                !         transition - the transition matrix - size n-by-n
+                !         l_ss - the steady state value of labour
+                ! OUTPUT: valuefn - the final value function - size m-by-n
+
+
+        implicit none
+
+        integer, intent(in) :: length_grid_k
+
+        real(dp), dimension(length_grid_k,n_tauchen), intent(inout) :: valuefn
+        real(dp), dimension(n_tauchen,n_tauchen), intent(in) :: transition
+        real(dp), dimension(length_grid_k), intent(in) :: grid_k
+        real(dp), dimension(n_tauchen), intent(in) :: y
+        real(dp), intent(in) :: l_ss
+
+        integer :: iter, index_k, index_z
+
+        real(dp), dimension(length_grid_k,n_tauchen) :: cih, D, Cstar, Vend, Vend1, Yend, value1, kend
+        real(dp) :: diff, B1, B2, B3
+
+        iter = 0
+        diff = 1000.d0
+
+        ! Need to define "cash in hand" tomorrow.
+        ! BLEH! function specific. Still want to change this!
+        do index_k = 1,length_grid_k
+            do index_z = 1,n_tauchen
+                cih(index_k,index_z)=exp(y(index_z))*grid_k(index_k)**alpha*l_ss**(1-alpha)+(1-delta)*grid_k(index_k)
+            enddo
+        enddo
+
+        ! These parameters simplify the calculations later
+
+        B1=(theta-1)*(1-tau)
+        B2=1/(theta*(1-tau)-1)
+        B3=theta*(1-tau)
+
+        !Here we start the iterations.
+
+        iter=0
+        diff=1
+
+        do while(diff>toler)
+            iter=iter+1
+#if 0
+            !Compute the derivatives of Vtilda at the grid points only.
+        D(1,:)=(valuefn(2,:)-valuefn(1,:))/step
+        D(length_grid_k,:)=(valuefn(length_grid_k,:)-valuefn(length_grid_k-1,:))/step
+        do index_k = 2,length_grid_k-1
+            D(index_k,:)=(value(index_k+1,:)-valuefn(index_k-1,:))/(2.d0*step)
+        enddo
+#endif
+            !Compute the derivatives of Vtilda at the grid points only.
+            !
+            ! A smarter way to do this - use the Euler condition. Would be nice if
+            ! we could just pass in a function pointer to the euler condition and calculate this.
+            D(1,:)=(valuefn(2,:)-valuefn(1,:))/stepVec(1)
+            D(length_grid_k,:)=(valuefn(length_grid_k,:)-valuefn(length_grid_k-1,:))/stepVec(length_grid_k-1)
+            do index_k = 2,length_grid_k-1
+                D(index_k,:)=(valuefn(index_k+1,:)-valuefn(index_k-1,:))/(stepVec(index_k)+stepVec(index_k-1))
+            enddo
+
+            Cstar=(1/theta*D*(1-l_ss)**B1)**B2
+            Vend=1/(1-tau)*Cstar**B3*(1-l_ss)**(-B1)+valuefn
+
+            do index_z = 1,n_tauchen
+                Yend(:,index_z)=Cstar(:,index_z)+grid_k
+                call sub_myinterp1(Yend(:,index_z),Vend(:,index_z), cih(:,index_z), length_grid_k, Vend1(:,index_z))
+            enddo
+
+            do index_k = 1,length_grid_k
+                do index_z = 1,n_tauchen
+                    value1(index_k,index_z)=beta*dot_product(transition(index_z,:),Vend1(index_k,:))
+                enddo
+            enddo
+
+            diff = maxval(abs(valuefn-value1))
+
+            valuefn=value1
+            if (mod(iter,10)==0) then
+                print *, 'sub_valueend1 Iteration: ', iter, 'Tolerance ', diff
+                flush(6)
+            endif
+        enddo
+
+        !The only variable that we need out of this program is Vend1 since it is already defined on grid_k.
+        valuefn=Vend1*(1-beta)
+
+    end subroutine sub_valueend1
+
+    subroutine sub_valueend2(valuefn,grid_k,length_grid_k,y,transition,kend,g_l,diffstandard)
+
+        implicit none
+
+        integer, intent(in) :: length_grid_k
+
+        real(dp), dimension(length_grid_k,n_tauchen), intent(inout) :: valuefn
+        real(dp), dimension(length_grid_k,n_tauchen), intent(inout) :: kend, g_l
+        real(dp), dimension(n_tauchen,n_tauchen), intent(in) :: transition
+        real(dp), dimension(length_grid_k), intent(in) :: grid_k
+        real(dp), dimension(n_tauchen), intent(in) :: y
+        real(dp), intent(in) :: diffstandard
+
+        integer :: iter, index_k, index_z, deriv
+
+        real(dp), dimension(length_grid_k,n_tauchen) :: cih, D, Cstar, Vend, Vend1, Yend, value1, L1
+        real(dp), dimension(length_grid_k,4) :: X
+        real(dp), dimension(4,4) :: XX, XXinv
+        real(dp), dimension(4) :: betahat
+        real(dp) :: diff, B1, B2, B3
+
+        iter = 0
+        diff = 1000.d0
+
+        ! Need to interpolate the policy function and the value function at the new Kend values
+
+        do index_z = 1,n_tauchen
+            call sub_myinterp1(grid_k, g_l(:,index_z), kend(:,index_z), length_grid_k, L1(:,index_z))
+        enddo
+        Vend1=valuefn
+
+        ! These parameters simplify the calculations later
+
+        B1=(theta-1)*(1-tau)
+        B2=1/(theta*(1-tau)-1)
+        B3=theta*(1-tau)
+
+        !Options for the derivative
+        deriv=1 !1 is the usual method, 2 is the polynomial.
+
+#if 0
+    if (deriv==2) then
+        do index_k = 1,length_grid_k
+            X(index_k,1) = 1.d0
+            X(index_k,2) = grid_k(index_k)
+            X(index_k,3) = grid_k(index_k)**2
+            X(index_k,4) = grid_k(index_k)**3
+        enddo
+        call dlinrg(4, matmul(transpose(X),X), 4, XXinv, 4)
+    endif
+#endif
+
+        !Here we start the iterations.
+        iter=0
+        diff=1
+
+        do while(diff>0.1d0*diffstandard)
+
+            iter=iter+1
+            do index_k = 1,length_grid_k
+                do index_z = 1,n_tauchen
+                    valuefn(index_k,index_z)=beta*dot_product(transition(index_z,:),Vend1(index_k,:))
+                enddo
+            enddo
+
+            !Compute the derivatives of Vtilda at the grid points only.
+            if (deriv==1) then
+#if 0
+                !Compute the derivatives using a linear system.
+            D(1,:)=(value(2,:)-value(1,:))/step
+            D(length_grid_k,:)=(value(length_grid_k,:)-value(length_grid_k-1,:))/step
+            do index_k = 2,length_grid_k-1
+                D(index_k,:)=(value(index_k+1,:)-value(index_k-1,:))/(2.d0*step)
+            enddo
+#endif
+                !Compute the derivatives of Vtilda at the grid points only.
+                !
+                ! A smarter way to do this - use the Euler condition. Would be nice if
+                ! we could just pass in a function pointer to the euler condition and calculate this.
+                D(1,:)=(valuefn(2,:)-valuefn(1,:))/stepVec(1)
+                D(length_grid_k,:)=(valuefn(length_grid_k,:)-valuefn(length_grid_k-1,:))/stepVec(length_grid_k-1)
+                do index_k = 2,length_grid_k-1
+                    D(index_k,:)=(valuefn(index_k+1,:)-valuefn(index_k-1,:))/(stepVec(index_k)+stepVec(index_k-1))
+                enddo
+            else
+                !Derivative using the regression.
+                do index_z =1,n_tauchen
+                    betahat = matmul(XXinv,matmul(transpose(X),valuefn(:,index_z)))
+                    D(:,index_z) = betahat(2) + 2.d0*betahat(3)*grid_k + 3.d0*betahat(4)*grid_k**2
+                enddo
+            endif
+
+            Cstar=(1/theta*D*(1-L1)**B1)**B2
+            Vend=1/(1-tau)*Cstar**B3*(1-L1)**(-B1)+valuefn
+            do index_k = 1,length_grid_k
+                do index_z = 1,n_tauchen
+                    call sub_kendogenousnewton2(kend(index_k,index_z),y(index_z),L1(index_k,index_z),&
+                        & Cstar(index_k,index_z),grid_k(index_k))
+                enddo
+            enddo
+
+            do index_z = 1,n_tauchen
+                call sub_myinterp1(kend(:,index_z), Vend(:,index_z), grid_k, length_grid_k, value1(:,index_z))
+                call sub_myinterp1(grid_k, g_l(:,index_z), kend(:,index_z), length_grid_k, L1(:,index_z))
+            enddo
+
+            diff = maxval(abs(value1-Vend1))
+            Vend1=value1
+#if 0
+            if (mod(iter,10)==0) then
+                print *, 'sub_valueEnd2 - Iteration: ', iter, 'Tolerance ', diff
+                flush(6)
+            endif
+#endif
+        enddo
+
+        !The only variable that we need out of this program is Vend1 since it is already defined on grid_k.
+        valuefn=value1*(1-beta)
+
+    end subroutine sub_valueend2
 
     subroutine sub_value(valuefn, g_k, g_c, grid_k, y, transition)
             ! The actual value iteration function
@@ -458,6 +855,7 @@ contains
         !
         ! Need to define "cash in hand" tomorrow.
         !
+        ! Bleh, is function specific
         forall (index_k = 1:length_grid_k, index_z=1:n_tauchen)
             cih(index_k,index_z)=exp(y(index_z))*grid_k(index_k)**alpha+(1-delta)*grid_k(index_k)
         end forall
@@ -466,7 +864,7 @@ contains
 
         print *,"starting iterations"
         flush(6)
-        do while((diff>toler) .and. (iter<5000))
+        do while((diff>toler) .and. (iter<MAX_ITER))
 
             iter=iter+1
 
@@ -498,8 +896,8 @@ contains
 
             diff = maxval(abs(value1-valuefn))
             valuefn=value1
-            if (mod(iter,50)==0) then
-                print *, 'Iteration: ', iter, 'Tolerance ', diff
+            if (mod(iter,10)==0) then
+                print *, 'subvalue: Iteration: ', iter, 'Tolerance ', diff
                 flush(6)
             end if
         enddo
@@ -531,48 +929,389 @@ contains
         deallocate(kend)
 
     end subroutine sub_value
+
+    subroutine sub_newton(kp,k,z,l)
+
+        implicit none
+
+        real(dp), intent(in) :: kp, k, z
+        real(dp), intent(out) :: l
+
+        integer :: go_on, iter
+
+        real(dp) :: f_l, f_lp, lp
+
+        l = 0.3d0
+        go_on = 1
+
+        iter = 1
+        do while ((go_on == 1) .and. (iter<MAX_ITER))
+            iter=iter+1
+
+            f_l  = kp-exp(z)*(k**alpha)*(l**(1-alpha))-(1-delta)*k+(theta/(1-theta))*(1-alpha)*exp(z)*(k**alpha)*(l**(-alpha))*(1-l)
+            f_lp = -(1-alpha)*exp(z)*(k**alpha)*(l**(-alpha))+(-alpha)*(theta/(1-theta))*(1-alpha)*exp(z)*(k**alpha)&
+                &*(l**(-1-alpha))*(1-l)-(theta/(1-theta))*(1-alpha)*exp(z)*(k**alpha)*(l**(-alpha))
+            lp = l-(f_l/f_lp)
+
+            if (abs(lp-l)<toler .or. lp>0.95 .or. lp<0.01) go_on = 0
+            l = lp
+
+            if (mod(iter,10)==0) then
+                print *, 'subnewton: Iteration: ', iter, 'Tolerance ', abs(lp-l)
+                flush(6)
+            end if
+
+        enddo
+
+        l = min(0.95,l)
+        l = max(0.01,l)
+
+    end subroutine sub_newton
+
+    subroutine sub_refinement(index_kp,index_z,k,z,grid_k,length_grid_k,transition,value,kp,mylabor,value_max_so_far)
+
+        implicit none
+
+        integer, intent(in) :: length_grid_k, index_kp, index_z
+
+        real (dp), dimension(length_grid_k,n_tauchen), intent(in) :: value
+        real (dp), dimension(n_tauchen,n_tauchen), intent(in) :: transition
+        real (dp), dimension(length_grid_k), intent(in) :: grid_k
+        real (dp), intent(in) :: k, z
+        real (dp), intent(out) :: kp, mylabor, value_max_so_far
+
+        integer :: length_index, index_kp_low, index_kp_high, index_kp_now, go_on, iter
+
+        real (dp), dimension(n_tauchen) :: myvalue
+        real (dp) :: c, kp_low, kp_high, kp_guess, kp_guess_new, value_comp, mylabor_guess
+
+        index_kp_now = max(index_kp-1,1)
+        kp = grid_k(index_kp_now)
+
+        call sub_newton(kp,k,z,mylabor)
+
+        c = exp(z)*(k**alpha)*(mylabor**(1-alpha))+(1-delta)*k-kp
+        value_max_so_far = (1-beta)*(((c**theta)*((1-mylabor)**(1-theta)))**(1-tau))/(1-tau)+&
+            &beta*dot_product(transition(index_z,:),value(index_kp_now,:))
+
+        index_kp_low  = max(1,index_kp-2)
+        index_kp_high = min(length_grid_k,index_kp)
+        length_index = index_kp_high-index_kp_low+1
+
+        kp_low  = grid_k(index_kp_low)
+        kp_high = grid_k(index_kp_high)
+        kp_guess = kp_low+0.6*(kp_high-kp_low)
+
+        go_on = 1
+        iter = 0
+        do while ((go_on == 1) .and. (iter<MAX_ITER))
+            iter = iter+1
+
+            call sub_myinterp3(grid_k(index_kp_low:index_kp_high),value(index_kp_low:index_kp_high,:),length_index,kp_guess,myvalue)
+
+            call sub_newton(kp_guess,k,z,mylabor_guess)
+
+            c = exp(z)*(k**alpha)*(mylabor_guess**(1-alpha))+(1-delta)*k-kp_guess
+
+            if (c<0.0) then
+                c = toler/10
+            endif
+
+            value_comp = (1-beta)*(((c**theta)*((1-mylabor_guess)**(1-theta)))**(1-tau))/(1-tau)+&
+                &beta*dot_product(transition(index_z,:),myvalue)
+
+            if (value_comp>value_max_so_far) then
+                if (kp_guess<kp) then
+                    kp_high = kp
+                else
+                    kp_low = kp
+                endif
+                kp_guess_new = kp_low+0.6*(kp_high-kp_low)
+                kp = kp_guess
+                value_max_so_far = value_comp
+            else
+                if (kp_guess<kp) then
+                    kp_low = kp_guess
+                else
+                    kp_high = kp_guess
+                endif
+                kp_guess_new = kp_low+0.6*(kp_high-kp_low)
+            endif
+
+            if (abs(kp_high-kp_low)<toler) go_on = 0
+            kp_guess = kp_guess_new
+
+#if 0
+            if (mod(iter,10)==0) then
+                print *, 'subrefinement: Iteration: ', iter, 'Tolerance ', kp_high-kp_low
+                flush(6)
+            end if
+#endif
+        enddo
+
+        kp = kp_guess
+        mylabor = mylabor_guess
+
+    end subroutine sub_refinement
+
+    subroutine sub_myinterp(x,f_x,xp,length_x,interp_value)
+
+        implicit none
+
+        integer, intent(in) :: length_x
+
+        real(dp), dimension(length_x), intent(in) :: x, f_x
+        real(dp), intent(in) :: xp
+        real(dp), intent(out) :: interp_value
+
+        integer, dimension(1) :: x_min
+        integer :: x_index
+
+        real (dp) :: t
+
+        x_min   = minloc(abs(x-xp))
+        x_index = x_min(1)
+        if (xp<x(x_index)) x_index = x_index-1
+        x_index = max(x_index,1)
+        x_index = min(x_index,length_x-1)
+
+        t = (f_x(x_index+1)-f_x(x_index))/(x(x_index+1)-x(x_index))
+
+        interp_value = t*(xp-x(x_index))+f_x(x_index)
+
+    end subroutine sub_myinterp
+
+    subroutine sub_golden(kend, K, grid_k, g_k1, length_grid_k)
+
+        ! Golden Search Algorithm.
+        implicit none
+
+        integer, intent(in) :: length_grid_k
+
+        real (dp), dimension(length_grid_k), intent(in) :: grid_k, g_k1
+        real (dp), intent(in) :: K
+        real (dp), intent(out) :: kend
+
+        integer :: go_on, iter
+
+        real (dp) :: kend1, A, B, C, D, fB, fC
+
+        A=K-1
+        D=K+1
+        B=0.6*A+0.4*D
+        C=0.4*A+0.6*D
+
+        call sub_myinterp(grid_k,g_k1,B,length_grid_k,kend1)
+        fB=-abs(kend1-K)
+        call sub_myinterp(grid_k,g_k1,C,length_grid_k,kend1)
+        fC=-abs(kend1-K)
+
+        go_on=1
+
+        iter = 0
+        do while((go_on==1) .and. (iter<MAX_ITER))
+            iter = iter+1
+
+            if (fB>fC) then
+                D=C
+                C=B
+                fC=fB
+                B=0.6*C+0.4*A
+                call sub_myinterp(grid_k,g_k1,B,length_grid_k,kend1)
+                fB=-abs(kend1-K)
+            else
+                A=B
+                B=C
+                fB=fC
+                C=0.6*B+0.4*D
+                call sub_myinterp(grid_k,g_k1,C,length_grid_k,kend1)
+                fC=-abs(kend1-K)
+            endif
+
+            if (abs(D-A)<toler) go_on=0
+
+#if 0
+            if (mod(iter,10)==0) then
+                print *, 'subgolden: Iteration: ', iter, 'Tolerance ', abs(D-A)
+                flush(6)
+            end if
+#endif
+
+        enddo
+
+        kend=B
+
+    end subroutine sub_golden
+
+    subroutine sub_valuestandard(valuefn,g_k,g_c,g_l,diff,grid_k,length_grid_k,y,transition)
+
+        implicit none
+
+        integer, intent(in) :: length_grid_k
+        real(dp), dimension(length_grid_k,n_tauchen), intent(inout) :: valuefn,g_k,g_c,g_l
+        real(dp), dimension(n_tauchen,n_tauchen), intent(in) :: transition
+        real(dp), dimension(length_grid_k), intent(in) :: grid_k
+        real(dp), dimension(n_tauchen), intent(in) :: y
+        real(dp), intent(out) :: diff
+
+        integer :: index_k, index_kp, index_z, previous_kp, index_maxk_so_far, flag
+
+        real(dp), dimension(length_grid_k,n_tauchen) :: value_prov, g_lprov, g_kprov
+        real(dp) :: diff2, k, kp, z, mylabor, c, value_max_so_far, value_comp, value_refinement, l, mylaborold, mylabornew
+
+
+        do index_k = 1, length_grid_k               ! Capital grid
+            k = grid_k(index_k)
+            do index_z = 1, n_tauchen
+                if (index_z == 1) then
+                    previous_kp = 1
+                else
+                    previous_kp = index_maxk_so_far
+                endif
+
+                z = y(index_z)
+                value_max_so_far = -100000000.d0
+
+                flag = 1
+                do index_kp = previous_kp, length_grid_k
+
+                    kp = grid_k(index_kp)
+
+                    call sub_newton(kp,k,z,mylabor)
+
+                    mylaborold = mylabor
+
+                    c = exp(z)*(k**alpha)*(mylabor**(1-alpha))+(1-delta)*k-kp
+                    if (c>0) then
+
+                        value_comp = (1-beta)*(((c**theta)*((1-mylabor)**(1-theta)))**(1-tau))/(1-tau)&
+                            &+beta*dot_product(transition(index_z,:),valuefn(index_kp,:))
+
+                        if (value_comp>value_max_so_far) then
+
+                            value_max_so_far = value_comp
+                            g_lprov(index_k,index_z) = mylabor
+                            g_kprov(index_k,index_z) = kp
+                            index_maxk_so_far = index_kp
+                        else
+
+                            if (flag == 1 .and. length_grid_k>20) then
+
+                                call sub_refinement(index_kp,index_z,k,z,grid_k,length_grid_k,transition,&
+                                    &valuefn,kp,mylabor,value_refinement)
+
+                                flag = flag+1
+
+                                if (value_max_so_far<value_refinement) then
+                                    value_max_so_far = value_refinement
+                                    g_lprov(index_k,index_z) = mylabor
+                                    g_kprov(index_k,index_z) = kp
+                                endif
+                            endif
+                        endif
+                    else
+                        exit
+                    endif
+                enddo
+                value_prov(index_k,index_z) = value_max_so_far
+            enddo
+        enddo
+
+        diff  = maxval(abs(value_prov - valuefn))
+        diff2 = maxval(abs(g_lprov - g_l))
+        valuefn = value_prov
+
+        g_l = g_lprov
+        g_k = g_kprov
+        do index_k = 1, length_grid_k
+            do index_z = 1, n_tauchen
+                g_c(index_k,index_z)=exp(y(index_z))*grid_k(index_k)**alpha*g_l(index_k,index_z)**(1-alpha)&
+                    &+(1-delta)*grid_k(index_k)-g_k(index_k,index_z)
+            enddo
+        enddo
+
+    end subroutine sub_valuestandard
+
 END MODULE endogenousGrid
 
 program main
     use nrtype
     use endogenousGrid
+    use modelDefinition
+
     implicit none
 
     real(DP), allocatable, dimension(:,:)  :: transition, transitioncdf, valuefn, g_k, g_c
-    real(DP), allocatable, dimension(:)  :: y, grid_k
-
-    integer :: index_k, length_grid_k, i1
-
+    real(DP), allocatable, dimension(:)  :: y, grid_k, inputVars, outputVars
+    integer :: index_k, length_grid_k, i1, index_z, iter
     real(DP) :: k_ss, c_ss, y_ss
-    real(DP) :: cover, cover_tauchen, valueinitial, step1
+    real(DP) :: cover, cover_tauchen, valueinitial, step1, diff
 
-    real (4) :: elapt, ta(2) !This is used in order to time the main block of the program.
-    real(dp) :: t0,t1,t2,delta_t
+! variables used for timing
+    real (4) :: elapt, ta(2)
+    real(DP) :: t0,t1,t2,delta_t
+! end timing variables
+
+#ifdef HAS_LABOUR
+    real(DP), allocatable, dimension(:,:)  :: g_l, kend
+    real(DP) :: l_ss, r_ss
+#endif
 
     call CPU_TIME(t0)
     call CPU_TIME(t1)
 
     print *, 'Beginning of the Program Value Function Iteration'
     print *, ' '
+    flush(6)
 
     !----------------------------------------------------------------
     ! 1. Computation of the Steady State
     !----------------------------------------------------------------
 
-    k_ss = ((1/beta-1+delta)/alpha)**(1/(alpha-1))
-    y_ss = k_ss**alpha
-    c_ss = k_ss**alpha-delta*k_ss
+#ifndef HAS_LABOUR
+    allocate(inputVars(3))
+    allocate(outputVars(3))
 
-    print *, 'Steady State values'
-    print *, 'Output: ', y_ss, 'Capital: ', k_ss
+    inputVars(1)=alpha
+    inputVars(2)=beta
+    inputVars(3)=delta
 
-    allocate(transition(n_tauchen,n_tauchen))
-    allocate(transitioncdf(n_tauchen,n_tauchen))
-    allocate(y(n_tauchen))
+    call steadyState(inputVars, outputVars)
+
+    y_ss = outputVars(1)
+    c_ss = outputVars(2)
+    k_ss = outputVars(3)
+
+    deallocate(inputVars)
+    deallocate(outputVars)
+
+#else
+    allocate(inputVars(4))
+    allocate(outputVars(5))
+
+    inputVars(1)=alpha
+    inputVars(2)=beta
+    inputVars(3)=delta
+    inputVars(4)=theta
+
+    call steadyState(inputVars, outputVars)
+
+    y_ss = outputVars(1)
+    c_ss = outputVars(2)
+    k_ss = outputVars(3)
+    l_ss = outputVars(4)
+    r_ss = outputVars(5)
+
+    deallocate(inputVars)
+    deallocate(outputVars)
+#endif
 
     !----------------------------------------------------------------
     ! 2. Tauchen Points
     !----------------------------------------------------------------
+    allocate(transition(n_tauchen,n_tauchen))
+    allocate(transitioncdf(n_tauchen,n_tauchen))
+    allocate(y(n_tauchen))
 
     cover_tauchen = 3.d0
     call sub_tauchen(y,transition,transitioncdf,rho,sigma,cover_tauchen)
@@ -586,10 +1325,13 @@ program main
     ! 3. Endogenous Grid algorithm
     !----------------------------------------------------------------
 
+    print *, 'Beginning the iteration of the value function with an initial linear guess '
+    print *, ' '
+    flush(6)
+
     cover = 0.25d0         ! Coverage of the grid (+- of steady state k)
     length_grid_k = 1000
     step1 = length_grid_k
-
 
     call initialize(length_grid_k)
 
@@ -598,19 +1340,83 @@ program main
     allocate(g_k(length_grid_k,n_tauchen))
     allocate(g_c(length_grid_k,n_tauchen))
 
+#ifdef HAS_LABOUR
+    allocate(g_l(length_grid_k,n_tauchen))
+    allocate(kend(length_grid_k,n_tauchen))
+#endif
+
     call sub_grid_generation(grid_k, k_ss, cover, 2.D0)
 
-    !
-    ! This is the initial increasing guess for the value function.
-    !
-    valueinitial = (1/(1-beta))*c_ss**(1-tau)/(1-tau)
+#ifndef HAS_LABOUR
+    allocate(inputVars(6))
+    allocate(outputVars(length_grid_k*n_tauchen))
 
-    do index_k = 1,length_grid_k
-        valuefn(index_k,:) = index_k/step1 + valueinitial
-    enddo
+    inputVars(1)=beta
+    inputVars(2)=c_ss
+    inputVars(3)=tau
+    inputVars(4)=step1
+    inputVars(5)=length_grid_k
+    inputVars(6)=n_tauchen
 
+#else
+    allocate(inputVars(8))
+    allocate(outputVars(length_grid_k*n_tauchen))
+
+    inputVars(1)=beta
+    inputVars(2)=c_ss
+    inputVars(3)=tau
+    inputVars(4)=step1
+    inputVars(5)=l_ss
+    inputVars(6)=theta
+    inputVars(7)=length_grid_k
+    inputVars(8)=n_tauchen
+#endif
+
+    call initValueFn(inputVars, outputVars)
+
+    forall(index_k=1:length_grid_k, i1=1:n_tauchen) valuefn(index_k,i1)=outputVars((index_k-1)*n_tauchen+i1)
+
+    deallocate(inputVars)
+    deallocate(outputVars)
+
+#ifndef HAS_LABOUR
     !Here we call the subroutine to carry out the endogenous grid
     call sub_value(valuefn,g_k,g_c,grid_k,y,transition)
+#else
+
+    !Endogenous grid algortihm holding labor constant at the s.s.
+    call sub_valueend1(valuefn,grid_k,length_grid_k,y,transition,l_ss)
+
+    !First standard iteration to recover policy functions.
+    call sub_valuestandard(valuefn,g_k,g_c,g_l,diff,grid_k,length_grid_k,y,transition)
+
+    iter = 0
+    do while ((diff>toler) .and. (iter<MAX_ITER))
+
+        ! The first step is take the input from the standard algorithm and compute the values of Kend such that
+        ! g_k(end)=k_grid
+        do index_k = 1,length_grid_k
+            do index_z = 1,n_tauchen
+                call sub_golden(kend(index_k,index_z), grid_k(index_k), grid_k, g_k(:,index_z), length_grid_k)
+            enddo
+        enddo
+
+        !Now do the endogenous grid for a few more extra steps
+        valuefn=valuefn/(1-beta)
+        call sub_valueend2(valuefn,grid_k,length_grid_k,y,transition,kend,g_l,diff)
+
+        !One standard iteration to recover policy functions.
+        call sub_valuestandard(valuefn,g_k,g_c,g_l,diff,grid_k,length_grid_k,y,transition)
+
+        iter = iter+1
+        if (mod(iter,1)==0) then
+            print *, 'main Iteration: ', iter, 'Tolerance ', diff
+            flush(6)
+        end if
+
+    enddo
+
+#endif
 
     call CPU_TIME(t2)
     delta_t=t2+t0-2.0d0*t1
@@ -647,4 +1453,5 @@ program main
     print *, ' '
     print *, 'End of the program'
     print *, ' '
+
 end program main
