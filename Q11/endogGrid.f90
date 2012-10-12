@@ -1,4 +1,3 @@
-#define newgrid 1
 MODULE nrtype
     INTEGER, PARAMETER :: I4B = SELECTED_INT_KIND(9)
     INTEGER, PARAMETER :: I2B = SELECTED_INT_KIND(4)
@@ -59,11 +58,7 @@ MODULE  endogenousGrid
     integer :: Tsimul    = 50000                                ! Number of simulations for the EEerror
 
     real (DP), parameter :: toler   = 1e-6                      ! Numerical tolerance
-#ifndef newgrid
-    real (DP) :: step
-#else
     real (DP), allocatable, dimension (:) :: stepVec
-#endif
     integer :: i1
 
     private :: sub_myinterp1, sub_kendogenousnewton
@@ -85,15 +80,11 @@ contains
 
     subroutine initialize(steps)
         integer, intent(in) :: steps
-#ifdef newgrid
         allocate(stepVec(steps))
-#endif
     end subroutine initialize
 
     subroutine clean()
-#ifdef newgrid
         deallocate(stepVec)
-#endif
     end subroutine clean
 
 
@@ -307,7 +298,6 @@ contains
 
     end subroutine sub_tauchen
 
-#ifdef newgrid
     SUBROUTINE sub_grid_generation(x,xcentre,xbounds,s)
         ! Purpose: Generate grid x on [xcentre*(1-xbounds),xcentre*(1+xbounds)] using spacing parameter s set as follows:
         ! s=1       linear spacing
@@ -342,39 +332,6 @@ contains
         FORALL(i=2:n) stepVec(i-1) = x(i)-x(i-1)
 
     END SUBROUTINE sub_grid_generation
-#else
-
-    subroutine sub_grid_generation(grid_k, k_ss, cover)
-
-        implicit none
-
-
-        real(dp), intent(in) :: cover, k_ss
-        real(dp), dimension(:), intent(out) :: grid_k
-
-        integer :: length_grid_k
-
-        print *, "linear grid"
-
-        length_grid_k = size(grid_k)
-        grid_k(1) = (1-cover)*k_ss
-        step = 2.d0*cover*k_ss/(length_grid_k-1.d0)
-
-        do i1 = 2, length_grid_k
-            grid_k(i1) = grid_k(i1-1)+step
-        enddo
-
-        print *,' '
-        print*, 'Grid generated with ',length_grid_k,'grid points with step size of', step
-        print *, 'and coverage of +-', cover*100, 'percent'
-        print *,' '
-
-        open(unit=11, file='grid_k.txt', status = 'replace')
-        write (11, '(f20.10)') (grid_k(i1), i1 = 1,length_grid_k)
-        close(11)
-
-    end subroutine sub_grid_generation
-#endif
 
     subroutine sub_myinterp1(x,f_x,xp,length_x,interp_value)
 
@@ -517,19 +474,11 @@ contains
             !
             ! A smarter way to do this - use the Euler condition. Would be nice if
             ! we could just pass in a function pointer to the euler condition and calculate this.
-#ifndef newgrid
-            D(1,:)=(valuefn(2,:)-valuefn(1,:))/step
-            D(length_grid_k,:)=(valuefn(length_grid_k,:)-valuefn(length_grid_k-1,:))/step
-            do index_k = 2,length_grid_k-1
-                D(index_k,:)=(valuefn(index_k+1,:)-valuefn(index_k-1,:))/(2.d0*step)
-            enddo
-#else
             D(1,:)=(valuefn(2,:)-valuefn(1,:))/stepVec(1)
             D(length_grid_k,:)=(valuefn(length_grid_k,:)-valuefn(length_grid_k-1,:))/stepVec(length_grid_k-1)
             do index_k = 2,length_grid_k-1
                 D(index_k,:)=(valuefn(index_k+1,:)-valuefn(index_k-1,:))/(stepVec(index_k)+stepVec(index_k-1))
             enddo
-#endif
             Cstar=D**(-1/tau)
 
             !again, this is for a very specific value function. Any way  we could
@@ -649,27 +598,16 @@ program main
     allocate(g_k(length_grid_k,n_tauchen))
     allocate(g_c(length_grid_k,n_tauchen))
 
-#ifdef newgrid
     call sub_grid_generation(grid_k, k_ss, cover, 2.D0)
-#else
-    call sub_grid_generation(grid_k, k_ss, cover)
-#endif
 
     !
     ! This is the initial increasing guess for the value function.
     !
     valueinitial = (1/(1-beta))*c_ss**(1-tau)/(1-tau)
 
-#ifndef newgrid
     do index_k = 1,length_grid_k
         valuefn(index_k,:) = index_k/step1 + valueinitial
     enddo
-#else
-    valuefn(1,:) = valueInitial
-    do index_k = 2,length_grid_k
-        valuefn(index_k,:) = stepVec(index_k-1) + valuefn(index_k-1,:)
-    enddo
-#endif
 
     !Here we call the subroutine to carry out the endogenous grid
     call sub_value(valuefn,g_k,g_c,grid_k,y,transition)
