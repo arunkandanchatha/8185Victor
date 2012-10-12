@@ -1,3 +1,4 @@
+#define newgrid 1
 MODULE nrtype
     INTEGER, PARAMETER :: I4B = SELECTED_INT_KIND(9)
     INTEGER, PARAMETER :: I2B = SELECTED_INT_KIND(4)
@@ -58,10 +59,15 @@ MODULE  endogenousGrid
     integer :: Tsimul    = 50000                                ! Number of simulations for the EEerror
 
     real (DP), parameter :: toler   = 1e-6                      ! Numerical tolerance
+#ifndef newgrid
     real (DP) :: step
+#else
+    real (DP), allocatable, dimension (:) :: stepVec
+#endif
     integer :: i1
 
     private :: sub_myinterp1, sub_kendogenousnewton
+    private :: i1, toler
 
 contains
 
@@ -73,8 +79,23 @@ contains
 
         CHARACTER (LEN=*), intent(in) :: calling
         print *, "STOP: ", calling
+        call clean()
         STOP 0
     end subroutine sub_mystop
+
+    subroutine initialize(steps)
+        integer, intent(in) :: steps
+#ifdef newgrid
+        allocate(stepVec(steps))
+#endif
+    end subroutine initialize
+
+    subroutine clean()
+#ifdef newgrid
+        deallocate(stepVec)
+#endif
+    end subroutine clean
+
 
     subroutine normal_01_cdf ( x, cdf )
 
@@ -286,40 +307,43 @@ contains
 
     end subroutine sub_tauchen
 
-    !    SUBROUTINE sub_grid_generation(x,xcentre,xbounds,s)
-            ! Purpose: Generate grid x on [xcentre*(1-xbounds),xcentre*(1+xbounds)] using spacing parameter s set as follows:
-            ! s=1       linear spacing
-            ! s>1       left skewed grid spacing with power s
-            ! 0<s<1     right skewed grid spacing with power s
-            ! s<0       geometric spacing with distances changing by a factor -s^(1/(n-1)), (>1 grow, <1 shrink)
-            ! s=-1      logarithmic spacing with distances changing by a factor (xmax-xmin+1)^(1/(n-1))
-            ! s=0       logarithmic spacing with distances changing by a factor (xmax/xmin)^(1/(n-1)), only if xmax,xmin>0
-    !        IMPLICIT NONE
-    !       REAL(DP), DIMENSION(:), INTENT(OUT) :: x
-    !        REAL(DP), INTENT(IN) :: xcentre,xbounds, s
-    !        REAL(DP) :: c ! growth rate of grid subintervals for logarithmic spacing
-    !        REAL(DP) :: xmax, xmin
-    !        INTEGER :: n,i
-    !
-    !        n=size(x)
-    !        xmax=xcentre*(1+xbounds);
-    !        xmin=xcentre*(1-xbounds);
-    !
-    !
-    !        FORALL(i=1:n) x(i)=(i-1)/real(n-1,WP)
-    !        IF (s>0.0_WP) THEN
-    !            x=x**s*(xmax-xmin)+xmin
-    !        ELSE
-    !            IF (s==-1.0_WP) THEN
-    !                c=xmax-xmin+1
-    !            ELSE
-    !                c=-s
-    !            END IF
-    !            x=((xmax-xmin)/(c-1))*(c**x)-((xmax-c*xmin)/(c-1))
-    !        END IF
-    !    END SUBROUTINE sub_grid_generation
+#ifdef newgrid
+    SUBROUTINE sub_grid_generation(x,xcentre,xbounds,s)
+        ! Purpose: Generate grid x on [xcentre*(1-xbounds),xcentre*(1+xbounds)] using spacing parameter s set as follows:
+        ! s=1       linear spacing
+        ! s>1       left skewed grid spacing with power s
+        ! 0<s<1     right skewed grid spacing with power s
+        ! s<0       geometric spacing with distances changing by a factor -s^(1/(n-1)), (>1 grow, <1 shrink)
+        ! s=-1      logarithmic spacing with distances changing by a factor (xmax-xmin+1)^(1/(n-1))
+        ! s=0       logarithmic spacing with distances changing by a factor (xmax/xmin)^(1/(n-1)), only if xmax,xmin>0
+        IMPLICIT NONE
+        REAL(DP), DIMENSION(:), INTENT(OUT) :: x
+        REAL(DP), INTENT(IN) :: xcentre,xbounds, s
+        REAL(DP) :: c ! growth rate of grid subintervals for logarithmic spacing
+        REAL(DP) :: xmax, xmin
+        INTEGER :: n,i
 
-    !subroutine sub_grid_generation(cover,length_grid_k,k_ss,grid_k)
+        n=size(x)
+        xmax=xcentre*(1+xbounds);
+        xmin=xcentre*(1-xbounds);
+
+        print *, "New grid"
+        FORALL(i=1:n) x(i)=(i-1)/real(n-1,WP)
+        IF (s>0.0_WP) THEN
+            x=x**s*(xmax-xmin)+xmin
+        ELSE
+            IF (s==-1.0_WP) THEN
+                c=xmax-xmin+1
+            ELSE
+                c=-s
+            END IF
+            x=((xmax-xmin)/(c-1))*(c**x)-((xmax-c*xmin)/(c-1))
+        END IF
+        FORALL(i=2:n) stepVec(i-1) = x(i)-x(i-1)
+
+    END SUBROUTINE sub_grid_generation
+#else
+
     subroutine sub_grid_generation(grid_k, k_ss, cover)
 
         implicit none
@@ -328,8 +352,9 @@ contains
         real(dp), intent(in) :: cover, k_ss
         real(dp), dimension(:), intent(out) :: grid_k
 
-        integer :: index_grid
         integer :: length_grid_k
+
+        print *, "linear grid"
 
         length_grid_k = size(grid_k)
         grid_k(1) = (1-cover)*k_ss
@@ -349,6 +374,7 @@ contains
         close(11)
 
     end subroutine sub_grid_generation
+#endif
 
     subroutine sub_myinterp1(x,f_x,xp,length_x,interp_value)
 
@@ -483,7 +509,7 @@ contains
 
         print *,"starting iterations"
         flush(6)
-        do while((diff>toler) .and. (iter<2000))
+        do while((diff>toler) .and. (iter<5000))
 
             iter=iter+1
 
@@ -491,12 +517,19 @@ contains
             !
             ! A smarter way to do this - use the Euler condition. Would be nice if
             ! we could just pass in a function pointer to the euler condition and calculate this.
+#ifndef newgrid
             D(1,:)=(valuefn(2,:)-valuefn(1,:))/step
             D(length_grid_k,:)=(valuefn(length_grid_k,:)-valuefn(length_grid_k-1,:))/step
             do index_k = 2,length_grid_k-1
                 D(index_k,:)=(valuefn(index_k+1,:)-valuefn(index_k-1,:))/(2.d0*step)
             enddo
-
+#else
+            D(1,:)=(valuefn(2,:)-valuefn(1,:))/stepVec(1)
+            D(length_grid_k,:)=(valuefn(length_grid_k,:)-valuefn(length_grid_k-1,:))/stepVec(length_grid_k-1)
+            do index_k = 2,length_grid_k-1
+                D(index_k,:)=(valuefn(index_k+1,:)-valuefn(index_k-1,:))/(stepVec(index_k)+stepVec(index_k-1))
+            enddo
+#endif
             Cstar=D**(-1/tau)
 
             !again, this is for a very specific value function. Any way  we could
@@ -559,11 +592,16 @@ program main
     real(DP), allocatable, dimension(:,:)  :: transition, transitioncdf, valuefn, g_k, g_c
     real(DP), allocatable, dimension(:)  :: y, grid_k
 
-    integer :: index_k, length_grid_k
+    integer :: index_k, length_grid_k, i1, step1
 
     real(DP) :: k_ss, c_ss, y_ss
-    real(DP) :: cover, cover_tauchen, step1, valueinitial
+    real(DP) :: cover, cover_tauchen, valueinitial
 
+    real (4) :: elapt, ta(2) !This is used in order to time the main block of the program.
+    real(dp) :: t0,t1,t2,delta_t
+
+    call CPU_TIME(t0)
+    call CPU_TIME(t1)
 
     print *, 'Beginning of the Program Value Function Iteration'
     print *, ' '
@@ -603,25 +641,44 @@ program main
     length_grid_k = 1000
     step1 = length_grid_k
 
+
+    call initialize(step1)
+
     allocate(grid_k(length_grid_k))
     allocate(valuefn(length_grid_k,n_tauchen))
     allocate(g_k(length_grid_k,n_tauchen))
     allocate(g_c(length_grid_k,n_tauchen))
 
-    !    call sub_grid_generation(grid_k, k_ss, cover, 2.D0)
+#ifdef newgrid
+    call sub_grid_generation(grid_k, k_ss, cover, 2.D0)
+#else
     call sub_grid_generation(grid_k, k_ss, cover)
+#endif
 
     !
     ! This is the initial increasing guess for the value function.
     !
     valueinitial = (1/(1-beta))*c_ss**(1-tau)/(1-tau)
 
+#ifndef newgrid
     do index_k = 1,length_grid_k
         valuefn(index_k,:) = index_k/step1 + valueinitial
     enddo
+#else
+    valuefn(1,:) = valueInitial
+    do index_k = 2,length_grid_k
+        valuefn(index_k,:) = stepVec(index_k-1) + valuefn(index_k-1,:)
+    enddo
+#endif
 
     !Here we call the subroutine to carry out the endogenous grid
     call sub_value(valuefn,g_k,g_c,grid_k,y,transition)
+
+    call CPU_TIME(t2)
+    delta_t=t2+t0-2.0d0*t1
+    print *, ' '
+    print *, 'Elapsed time in the main program =', delta_t, 'sec'
+    print *, ' '
 
     !----------------------------------------------------------------
     ! 4. Output
@@ -638,6 +695,16 @@ program main
     open(unit=13,   file='g_k.txt', status = 'replace')
     write (13, '(5f20.10)') (g_k(i1, :), i1 = 1,length_grid_k)
     close(13)
+
+    !----------------------------------------------------------------
+    ! 5. cleanup
+    !----------------------------------------------------------------
+    call clean()
+
+    elapt = etime(ta)
+    write (*,*), ' '
+    write (*,'(a17, x, f8.2, x, a20)'), ' Program has used', elapt, 'seconds of CPU time,'
+    write (*,'(a5, x, f8.2, x, a24, x, f5.2, x, a23)'), ' with', ta(1), 'seconds of user time and', ta(2), 'seconds of system time.'
 
     print *, ' '
     print *, 'End of the program'
