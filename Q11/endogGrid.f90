@@ -592,10 +592,10 @@ program main
     real(DP), allocatable, dimension(:,:)  :: transition, transitioncdf, valuefn, g_k, g_c
     real(DP), allocatable, dimension(:)  :: y, grid_k
 
-    integer :: index_k, length_grid_k, i1, step1
+    integer :: index_k, length_grid_k, i1
 
     real(DP) :: k_ss, c_ss, y_ss
-    real(DP) :: cover, cover_tauchen, valueinitial
+    real(DP) :: cover, cover_tauchen, valueinitial, step1
 
     real (4) :: elapt, ta(2) !This is used in order to time the main block of the program.
     real(dp) :: t0,t1,t2,delta_t
@@ -642,7 +642,7 @@ program main
     step1 = length_grid_k
 
 
-    call initialize(step1)
+    call initialize(length_grid_k)
 
     allocate(grid_k(length_grid_k))
     allocate(valuefn(length_grid_k,n_tauchen))
