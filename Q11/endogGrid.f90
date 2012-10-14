@@ -40,32 +40,102 @@ module modelDefinition
     use nrtype
     implicit none
 
+    !----------------------------------------------------------------
+    ! 1. Calibration
+    !----------------------------------------------------------------
+
+    real (DP), parameter :: delta  = 0.0196                         ! Depreciation
+    real (DP), parameter :: alpha  = 0.4                            ! Capital Share
+    real (DP), parameter :: tau    = 2.d0                           ! risk aversion
+    real (DP), parameter :: beta   = 0.9896                         ! Discount factor
+    real (DP), parameter :: theta   = 0.357                         ! weight on consumption
+    real (DP), parameter :: rho    = 0.95                           ! Autoregressive
+    real (DP), parameter :: sigma  = 0.007                          ! Variance
+
+    real(DP) :: k_ss, l_ss, c_ss, r_ss, y_ss
+
+    private::alpha, beta, tau, delta, theta, rho, sigma
+    private:: k_ss, l_ss, c_ss, r_ss, y_ss
+
 contains
 
-subroutine steadystate(inputVars, outputVars)
-        ! This subroutine contains the calculations for steady state values.
-        !
-        ! INPUTS: inputVars - a vector of input values.
-        ! OUTPUTS: outputVars - a vector of output values.
-        !
-        ! Note: To pass arrays, see the initValueFn subroutine below
-    implicit none
+    subroutine sub_modelclean()
+    end subroutine sub_modelclean
 
-    !----------------------------------------------------------------
-    ! 1. Computation of the Steady State
-    !----------------------------------------------------------------
-    real(DP), dimension(:), INTENT(IN) :: inputVars
-    real(DP), dimension(:), INTENT(OUT) :: outputVars
+    subroutine sub_modelstop(calling)
+        ! a personal stop subroutine. Makes it easier to edit behaviour of stop. All
+        ! functions and subroutines should call this.
+        !
+        ! INPUTS: calling - a string indicating where this subroutine was called from
+
+        CHARACTER (LEN=*), intent(in) :: calling
+        print *, "STOP: ", calling
+        call sub_modelclean()
+        STOP 0
+    end subroutine sub_modelstop
+
+    function sub_modelOutput(inputVars)
+        ! a function that returns the output given a set of required inputs. The typical
+        ! minimal inputs are:
+        !   1) z - a stochastic shock
+        !   2) k - the k at which to evaluate the output
+        !   3) l - the l at which to evaluate the output
+        real(DP) :: sub_modelOutput
+        real(DP), dimension(:), intent(IN) :: inputVars
+        real(DP) :: z, k
+
+        z=inputVars(1)
+        k=inputVars(2)
+
+        sub_modelOutput = exp(z)*k**alpha-(1-delta)*k
+    end function sub_modelOutput
+
+    function sub_modelf_kp(inputVars)
+        ! a function that returns the marginal productivity of capital, given a set
+        ! of required inputs. The typical minimal inputs are:
+        !   1) z - a stochastic shock
+        !   2) k - the k at which to evaluate the output
+        !   3) l - the l at which to evaluate the output
+
+        real(DP) :: sub_modelf_kp
+        real(DP), dimension(:), intent(IN) :: inputVars
+        real(DP) :: z, k
+
+        z=inputVars(1)
+        k=inputVars(2)
+
+        sub_modelf_kp = -alpha*exp(z)*k**(alpha-1)-(1-delta)
+    end function sub_modelf_kp
+
+    function sub_modelf_lp(inputVars)
+        ! a function that returns the marginal productivity of labour, given a set
+        ! of required inputs. The typical minimal inputs are:
+        !   1) z - a stochastic shock
+        !   2) k - the k at which to evaluate the output
+        !   3) l - the l at which to evaluate the output
+        real(DP) :: sub_modelf_lp
+        real(DP), dimension(:), intent(IN) :: inputVars
+        real(DP) :: z, k, l
+
+        z=inputVars(1)
+        k=inputVars(2)
+        l=inputVars(3)
+
+        sub_modelf_lp = (1-alpha)*exp(z)*k**(alpha)*l**(-alpha)
+    end function sub_modelf_lp
+
+    subroutine steadystate(outputVars)
+            ! This subroutine contains the calculations for steady state values.
+            !
+            ! OUTPUTS: outputVars - a vector of output values.
+            !
+            ! Note: To pass arrays, see the initValueFn subroutine below
+        implicit none
+
+        real(DP), dimension(:), INTENT(OUT) :: outputVars
 
 #ifdef HAS_LABOUR
-    real(DP) :: alpha, beta, delta, theta
-    real(DP) :: k_ss, l_ss, c_ss, r_ss, y_ss
     real(DP) :: phi, omega, big_phi
-
-    alpha = inputVars(1)
-    beta = inputVars(2)
-    delta = inputVars(3)
-    theta = inputVars(4)
 
     phi     = (1/alpha*(1/beta-1+delta))**(1/(1-alpha))
     omega   = (phi**(1-alpha)-delta)
@@ -87,73 +157,111 @@ subroutine steadystate(inputVars, outputVars)
     print *, 'Output: ', y_ss, 'Capital: ', k_ss, 'Labor: ', l_ss
 
 #else
-    real(DP) :: alpha, beta, delta
-    real(DP) :: k_ss, c_ss, y_ss
+        k_ss = ((1/beta-1+delta)/alpha)**(1/(alpha-1))
+        y_ss = k_ss**alpha
+        c_ss = k_ss**alpha-delta*k_ss
+        outputVars(1) = y_ss
+        outputVars(2) = c_ss
+        outputVars(3) = k_ss
 
-    alpha = inputVars(1)
-    beta = inputVars(2)
-    delta = inputVars(3)
-
-    k_ss = ((1/beta-1+delta)/alpha)**(1/(alpha-1))
-    y_ss = k_ss**alpha
-    c_ss = k_ss**alpha-delta*k_ss
-    outputVars(1) = y_ss
-    outputVars(2) = c_ss
-    outputVars(3) = k_ss
-
-    print *, 'Steady State values'
-    print *, 'Output: ', y_ss, 'Capital: ', k_ss
+        print *, 'Steady State values'
+        print *, 'Output: ', y_ss, 'Capital: ', k_ss
 
 #endif
+    end subroutine steadystate
 
-end subroutine steadystate
+    subroutine initValueFn(inputVars, outputVars)
+            ! This subroutine contains the calculations to initialize the initial guess of an increasing
+            ! value function.
+            !
+            ! INPUTS: inputVars - a vector of input values. typicaly
+            !                         1) step1:  the step size
+            !                         2) m: the number of points on the k grid
+            !                         3) n: the number of exogenous states
+            ! OUTPUTS: outputVars - a vector (which is actually a linearized matrix) representing the value function
+            !
+            ! Note: To pass arrays, see the initValueFn subroutine below
+        implicit none
 
-subroutine initValueFn(inputVars, outputVars)
-        ! This subroutine contains the calculations to initialize the initial guess of an increasing
-        ! value function.
-        !
-        ! INPUTS: inputVars - a vector of input values.
-        ! OUTPUTS: outputVars - a vector (which is actually a linearized matrix) representing the value function
-        !
-        ! Note: To pass arrays, see the initValueFn subroutine below
-    implicit none
-
-    real(DP), dimension(:), INTENT(IN) :: inputVars
-    real(DP), dimension(:), INTENT(OUT) :: outputVars
+        real(DP), dimension(:), INTENT(IN) :: inputVars
+        real(DP), dimension(:), INTENT(OUT) :: outputVars
 
 #ifdef HAS_LABOUR
-    real(DP) :: beta, c_ss, tau, step1, valueinitial, l_ss, theta
+    real(DP) :: step1, valueinitial, theta
     integer :: index_k, i1, m, n
 
-    beta = inputVars(1)
-    c_ss=inputVars(2)
-    tau=inputVars(3)
-    step1 = inputVars(4)
-    l_ss = inputVars(5)
-    theta = inputVars(6)
-    m = inputVars(7)
-    n = inputVars(8)
+    step1 = inputVars(1)
+    m = inputVars(2)
+    n = inputVars(3)
 
     valueinitial = (1/(1-beta))*((c_ss**theta*(1-l_ss)**theta)**(1-tau))/(1-tau)
     forall (index_k = 1:m, i1=1:n) outputVars((index_k-1)*n+i1) = index_k/step1 + valueinitial
 
 #else
-    real(DP) :: beta, c_ss, tau, step1, valueinitial
-    integer :: index_k, i1
+        real(DP) :: step1, valueinitial
+        integer :: index_k, i1, m, n
 
-    beta = inputVars(1)
-    c_ss=inputVars(2)
-    tau=inputVars(3)
-    step1 = inputVars(4)
-    m = inputVars(5)
-    n = inputVars(6)
+        step1 = inputVars(1)
+        m = inputVars(2)
+        n = inputVars(3)
 
-    valueinitial = (1/(1-beta))*c_ss**(1-tau)/(1-tau)
+        valueinitial = (1/(1-beta))*c_ss**(1-tau)/(1-tau)
 
-    forall (index_k = 1:m, i1=1:n) outputVars((index_k-1)*n+i1) = index_k/step1 + valueinitial
+        forall (index_k = 1:m, i1=1:n) outputVars((index_k-1)*n+i1) = index_k/step1 + valueinitial
 #endif
+    end subroutine initValueFn
 
-end subroutine initValueFn
+    SUBROUTINE cashInHand(outputVars, m, n, grid_y, grid_k, grid_z)
+            !
+            ! This subroutine defines tomorrow's "cash in hand" using model parameters.
+            !
+            ! INPUTS: m: the number of points on the k grid
+            !         n: the number of exogenous states
+            !         grid_k: the vector of size m of capital grid points
+            !         grid_y: The vector of size n of output given shocks
+            !         grid_z: The vector of discretized shocks (optional)
+            ! OUTPUTS: outputVars - a m-by-n matrix representing the cash in hand function
+        real(DP), dimension(:), INTENT(IN) :: grid_k
+        real(DP), dimension(:), INTENT(IN) :: grid_y
+        REAL(DP), dimension(:), INTENT(IN), OPTIONAL :: grid_z
+        integer, INTENT(IN) :: m, n
+        real(DP), dimension(:,:), INTENT(OUT) :: outputVars
+
+        integer :: index_k, index_z
+
+        IF (size(grid_k,dim=1)/=m) THEN
+            PRINT '(a,i3)', 'cashInHand: grid_k must be a vector of size ',m
+            call sub_modelstop('program terminated in cash in hand')
+        END IF
+
+        IF (size(grid_y,dim=1)/=n) THEN
+            PRINT '(a,i3)', 'cashInHand: grid_y must be a vector of size ',n
+            call sub_modelstop('program terminated in cash in hand')
+        END IF
+
+        IF (present(grid_z)) THEN
+            IF (size(grid_z,dim=1)/=n) THEN
+                PRINT '(a,i3)', 'cashInHand: grid_z must be a vector of size ',n
+                call sub_modelstop('program terminated in cash in hand')
+            END IF
+        END IF
+
+        IF ( (size(outputVars,dim=1)/=m) .and. (size(outputVars,dim=2)/=n) ) THEN
+            PRINT '(a,i3)', 'cashInHand: outputVars must be a matrix of size ',m, '-by-',n
+            call sub_modelstop('program terminated in cash in hand')
+        END IF
+
+#ifndef HAS_LABOUR
+        forall (index_k = 1:m, index_z=1:n)
+            outputVars(index_k,index_z)=&
+                &exp(grid_y(index_z))*grid_k(index_k)**alpha+(1-delta)*grid_k(index_k)
+        end forall
+#else
+            PRINT '(a,i3)', 'cashInHand: has_labour, but cash in hand not defined. ERROR!'
+            call sub_modelstop('program terminated in cash in hand')
+#endif
+    END SUBROUTINE cashInHand
+
 END MODULE modelDefinition
 
 ! This module contains everything we neeed to perform a value function interation using the endogenous
@@ -423,8 +531,6 @@ contains
         write (16, '(41f20.10)') (pi(i1, :), i1 = 1,n)
         close(16)
 
-
-
     end subroutine sub_tauchen
 
     SUBROUTINE sub_grid_generation(x,xcentre,xbounds,s)
@@ -435,6 +541,12 @@ contains
         ! s<0       geometric spacing with distances changing by a factor -s^(1/(n-1)), (>1 grow, <1 shrink)
         ! s=-1      logarithmic spacing with distances changing by a factor (xmax-xmin+1)^(1/(n-1))
         ! s=0       logarithmic spacing with distances changing by a factor (xmax/xmin)^(1/(n-1)), only if xmax,xmin>0
+        !
+        ! INPUTS: xcentre - The centre of the grid
+        !         xbounds - how far away from the centre the bounds go.
+        !         s - skewness of grid - see above
+        ! OUTPUT: x - the generated grid
+
         IMPLICIT NONE
         REAL(DP), DIMENSION(:), INTENT(OUT) :: x
         REAL(DP), INTENT(IN) :: xcentre,xbounds, s
@@ -463,6 +575,12 @@ contains
     END SUBROUTINE sub_grid_generation
 
     subroutine sub_myinterp1(x,f_x,xp,length_x,interp_value)
+        ! Purpose:
+        !
+        ! INPUTS: x
+        !         f_x
+        !         xp
+        ! OUTPUT: interp_value
 
         implicit none
 
@@ -488,7 +606,6 @@ contains
             interp_value(index_k) = t*(xp(index_k)-x(x_index))+f_x(x_index)
 
         enddo
-
     end subroutine sub_myinterp1
 
     subroutine sub_myinterp3(x,f_x,length_index,xp,interp_value)
@@ -521,19 +638,24 @@ contains
 
         real(DP), intent(in) :: Yend,z,kguess
         real(DP), intent(out) :: kend
-
+        real(DP), dimension(2) :: inputVars
         integer :: go_on
 
         real(DP) :: f_k, f_kp, kp
 
         kend=kguess
 
+        inputVars(1)=z
+
         go_on = 1
         do while (go_on == 1)
 
-            !ugh. Again, specific to the function. We should change this as well
-            f_k  = Yend-exp(z)*kend**alpha-(1-delta)*kend
-            f_kp = -alpha*exp(z)*kend**(alpha-1)-(1-delta)
+            ! difference between target production (Yend) and estimate at
+            ! given k (kend)
+            inputVars(2)=kend
+            f_k  = Yend-sub_modelOutput(inputVars)
+            f_kp = sub_modelf_kp(inputVars)
+
             kp = kend-(f_k/f_kp)
 
             if (abs(kp-kend)<toler) go_on = 0
@@ -542,34 +664,34 @@ contains
 
     end subroutine sub_kendogenousnewton
 
-subroutine sub_kendogenousnewton2(kend,z,labor,Cstar,kprime)
+    subroutine sub_kendogenousnewton2(kend,z,labor,Cstar,kprime)
 
-    implicit none
+        implicit none
 
-    real(dp), intent(in) :: z,labor,Cstar,kprime
-    real(dp), intent(out) :: kend
+        real(dp), intent(in) :: z,labor,Cstar,kprime
+        real(dp), intent(out) :: kend
 
-    integer :: go_on
+        integer :: go_on
 
-    real(dp) :: f_k, f_kp, kp
+        real(dp) :: f_k, f_kp, kp
 
-    !Uses as initial guess the value of capital tomorrow.
-    kend=kprime
+        !Uses as initial guess the value of capital tomorrow.
+        kend=kprime
 
-    go_on = 1
-    do while (go_on == 1)
+        go_on = 1
+        do while (go_on == 1)
 
-        f_k  = kprime + Cstar-exp(z)*kend**alpha*labor**(1-alpha)-(1-delta)*kend
-        f_kp = -alpha*exp(z)*kend**(alpha-1)*labor**(1-alpha)-(1-delta)
-        kp = kend-(f_k/f_kp)
+            f_k  = kprime + Cstar-exp(z)*kend**alpha*labor**(1-alpha)-(1-delta)*kend
+            f_kp = -alpha*exp(z)*kend**(alpha-1)*labor**(1-alpha)-(1-delta)
+            kp = kend-(f_k/f_kp)
 
-        if (abs(kp-kend)<toler) go_on = 0
-        kend = kp
-    enddo
+            if (abs(kp-kend)<toler) go_on = 0
+            kend = kp
+        enddo
 
-end subroutine sub_kendogenousnewton2
+    end subroutine sub_kendogenousnewton2
 
-subroutine sub_valueend1(valuefn,grid_k,length_grid_k,y,transition,l_ss)
+    subroutine sub_valueend1(valuefn,grid_k,length_grid_k,y,transition,l_ss)
                 ! The actual value iteration function when we have labour
                 ! INPUTS: valuefn - The initial guess of the value function, size m-by-n
                 !         grid_k - grid of possible capital values (..,ks,..), size m
@@ -617,16 +739,8 @@ subroutine sub_valueend1(valuefn,grid_k,length_grid_k,y,transition,l_ss)
         iter=0
         diff=1
 
-        do while(diff>toler)
+        do while((diff>toler) .and. (iter<MAX_ITER))
             iter=iter+1
-#if 0
-            !Compute the derivatives of Vtilda at the grid points only.
-        D(1,:)=(valuefn(2,:)-valuefn(1,:))/step
-        D(length_grid_k,:)=(valuefn(length_grid_k,:)-valuefn(length_grid_k-1,:))/step
-        do index_k = 2,length_grid_k-1
-            D(index_k,:)=(value(index_k+1,:)-valuefn(index_k-1,:))/(2.d0*step)
-        enddo
-#endif
             !Compute the derivatives of Vtilda at the grid points only.
             !
             ! A smarter way to do this - use the Euler condition. Would be nice if
@@ -705,18 +819,6 @@ subroutine sub_valueend1(valuefn,grid_k,length_grid_k,y,transition,l_ss)
         !Options for the derivative
         deriv=1 !1 is the usual method, 2 is the polynomial.
 
-#if 0
-    if (deriv==2) then
-        do index_k = 1,length_grid_k
-            X(index_k,1) = 1.d0
-            X(index_k,2) = grid_k(index_k)
-            X(index_k,3) = grid_k(index_k)**2
-            X(index_k,4) = grid_k(index_k)**3
-        enddo
-        call dlinrg(4, matmul(transpose(X),X), 4, XXinv, 4)
-    endif
-#endif
-
         !Here we start the iterations.
         iter=0
         diff=1
@@ -732,14 +834,6 @@ subroutine sub_valueend1(valuefn,grid_k,length_grid_k,y,transition,l_ss)
 
             !Compute the derivatives of Vtilda at the grid points only.
             if (deriv==1) then
-#if 0
-                !Compute the derivatives using a linear system.
-            D(1,:)=(value(2,:)-value(1,:))/step
-            D(length_grid_k,:)=(value(length_grid_k,:)-value(length_grid_k-1,:))/step
-            do index_k = 2,length_grid_k-1
-                D(index_k,:)=(value(index_k+1,:)-value(index_k-1,:))/(2.d0*step)
-            enddo
-#endif
                 !Compute the derivatives of Vtilda at the grid points only.
                 !
                 ! A smarter way to do this - use the Euler condition. Would be nice if
@@ -852,15 +946,10 @@ subroutine sub_valueend1(valuefn,grid_k,length_grid_k,y,transition,l_ss)
         iter = 0
         diff = 1000.d0
 
-        !
-        ! Need to define "cash in hand" tomorrow.
-        !
-        ! Bleh, is function specific
-        forall (index_k = 1:length_grid_k, index_z=1:n_tauchen)
-            cih(index_k,index_z)=exp(y(index_z))*grid_k(index_k)**alpha+(1-delta)*grid_k(index_k)
-        end forall
+        ! define the cash in hand array
+        call cashInHand(cih, length_grid_k, n_tauchen, y, grid_k)
 
-            !Here we start the iterations.
+        !Here we start the iterations.
 
         print *,"starting iterations"
         flush(6)
@@ -1247,10 +1336,10 @@ program main
     real(DP) :: k_ss, c_ss, y_ss
     real(DP) :: cover, cover_tauchen, valueinitial, step1, diff
 
-! variables used for timing
+    ! variables used for timing
     real (4) :: elapt, ta(2)
     real(DP) :: t0,t1,t2,delta_t
-! end timing variables
+    ! end timing variables
 
 #ifdef HAS_LABOUR
     real(DP), allocatable, dimension(:,:)  :: g_l, kend
@@ -1269,32 +1358,20 @@ program main
     !----------------------------------------------------------------
 
 #ifndef HAS_LABOUR
-    allocate(inputVars(3))
     allocate(outputVars(3))
 
-    inputVars(1)=alpha
-    inputVars(2)=beta
-    inputVars(3)=delta
-
-    call steadyState(inputVars, outputVars)
+    call steadyState(outputVars)
 
     y_ss = outputVars(1)
     c_ss = outputVars(2)
     k_ss = outputVars(3)
 
-    deallocate(inputVars)
     deallocate(outputVars)
 
 #else
-    allocate(inputVars(4))
     allocate(outputVars(5))
 
-    inputVars(1)=alpha
-    inputVars(2)=beta
-    inputVars(3)=delta
-    inputVars(4)=theta
-
-    call steadyState(inputVars, outputVars)
+    call steadyState(outputVars)
 
     y_ss = outputVars(1)
     c_ss = outputVars(2)
@@ -1302,7 +1379,6 @@ program main
     l_ss = outputVars(4)
     r_ss = outputVars(5)
 
-    deallocate(inputVars)
     deallocate(outputVars)
 #endif
 
@@ -1347,30 +1423,12 @@ program main
 
     call sub_grid_generation(grid_k, k_ss, cover, 2.D0)
 
-#ifndef HAS_LABOUR
-    allocate(inputVars(6))
+    allocate(inputVars(3))
     allocate(outputVars(length_grid_k*n_tauchen))
 
-    inputVars(1)=beta
-    inputVars(2)=c_ss
-    inputVars(3)=tau
-    inputVars(4)=step1
-    inputVars(5)=length_grid_k
-    inputVars(6)=n_tauchen
-
-#else
-    allocate(inputVars(8))
-    allocate(outputVars(length_grid_k*n_tauchen))
-
-    inputVars(1)=beta
-    inputVars(2)=c_ss
-    inputVars(3)=tau
-    inputVars(4)=step1
-    inputVars(5)=l_ss
-    inputVars(6)=theta
-    inputVars(7)=length_grid_k
-    inputVars(8)=n_tauchen
-#endif
+    inputVars(1)=step1
+    inputVars(2)=length_grid_k
+    inputVars(3)=n_tauchen
 
     call initValueFn(inputVars, outputVars)
 
