@@ -87,7 +87,7 @@ contains
         z=inputVars(1)
         k=inputVars(2)
 
-        sub_modelOutput = exp(z)*k**alpha-(1-delta)*k
+        sub_modelOutput = exp(z)*k**alpha+(1-delta)*k
     end function sub_modelOutput
 
     function sub_modelf_kp(inputVars)
@@ -261,6 +261,37 @@ contains
             call sub_modelstop('program terminated in cash in hand')
 #endif
     END SUBROUTINE cashInHand
+
+    FUNCTION getCStar(length_grid_k,n_tauchen,valuefn,stepVec) RESULT(y)
+        ! Get optimal consumption given the value function
+        ! Note: The last step is from the envelope condition
+        INTEGER, INTENT(IN) :: length_grid_k
+        INTEGER, INTENT(IN) :: n_tauchen
+        REAL(DP), DIMENSION(length_grid_k,n_tauchen), INTENT(IN) :: valuefn
+        REAL(DP), DIMENSION(length_grid_k), INTENT(IN) :: stepVec
+        REAL(DP), DIMENSION(length_grid_k,n_tauchen) :: y
+        REAL(DP), DIMENSION(length_grid_k,n_tauchen) :: D
+        INTEGER :: index_k
+
+        D(1,:)=(valuefn(2,:)-valuefn(1,:))/stepVec(1)
+        D(length_grid_k,:)=(valuefn(length_grid_k,:)-valuefn(length_grid_k-1,:))/stepVec(length_grid_k-1)
+        do index_k = 2,length_grid_k-1
+            D(index_k,:)=(valuefn(index_k+1,:)-valuefn(index_k-1,:))/(stepVec(index_k)+stepVec(index_k-1))
+        enddo
+        y=D**(-1/tau)
+    END FUNCTION getCStar
+
+    FUNCTION getVStar(length_grid_k,n_tauchen,Cstar,valuefn) RESULT(y)
+        ! Get optimal consumption given the value function
+        ! Note: The last step is from the envelope condition
+        INTEGER, INTENT(IN) :: length_grid_k
+        INTEGER, INTENT(IN) :: n_tauchen
+        REAL(DP), DIMENSION(length_grid_k,n_tauchen), INTENT(IN) :: valuefn, Cstar
+        REAL(DP), DIMENSION(length_grid_k,n_tauchen) :: y
+
+        y=1/(1-tau)*Cstar**(1-tau)+valuefn
+    END FUNCTION
+
 
 END MODULE modelDefinition
 
@@ -558,7 +589,6 @@ contains
         xmax=xcentre*(1+xbounds);
         xmin=xcentre*(1-xbounds);
 
-        print *, "New grid"
         FORALL(i=1:n) x(i)=(i-1)/real(n-1,WP)
         IF (s>0.0_WP) THEN
             x=x**s*(xmax-xmin)+xmin
@@ -639,7 +669,7 @@ contains
         real(DP), intent(in) :: Yend,z,kguess
         real(DP), intent(out) :: kend
         real(DP), dimension(2) :: inputVars
-        integer :: go_on
+        integer :: go_on,iter
 
         real(DP) :: f_k, f_kp, kp
 
@@ -648,18 +678,25 @@ contains
         inputVars(1)=z
 
         go_on = 1
+        iter=0
         do while (go_on == 1)
+            iter = iter+1
 
-            ! difference between target production (Yend) and estimate at
-            ! given k (kend)
+             ! difference between target production (Yend) and estimate at
+             ! given k (kend)
             inputVars(2)=kend
             f_k  = Yend-sub_modelOutput(inputVars)
             f_kp = sub_modelf_kp(inputVars)
-
             kp = kend-(f_k/f_kp)
 
             if (abs(kp-kend)<toler) go_on = 0
+
             kend = kp
+            if(iter>MAX_ITER) then
+                PRINT '(a,i3,a,i3)', 'sub_kendogenousnewton: too many iterations'
+                call sub_mystop('program terminated by sub_kendogenousnewton')
+            endif
+
         enddo
 
     end subroutine sub_kendogenousnewton
@@ -714,7 +751,7 @@ contains
 
         integer :: iter, index_k, index_z
 
-        real(dp), dimension(length_grid_k,n_tauchen) :: cih, D, Cstar, Vend, Vend1, Yend, value1, kend
+        real(dp), dimension(length_grid_k,n_tauchen) :: cih, D, Cstar, Vend, Vend1, Yend, value1
         real(dp) :: diff, B1, B2, B3
 
         iter = 0
@@ -794,9 +831,9 @@ contains
 
         integer :: iter, index_k, index_z, deriv
 
-        real(dp), dimension(length_grid_k,n_tauchen) :: cih, D, Cstar, Vend, Vend1, Yend, value1, L1
+        real(dp), dimension(length_grid_k,n_tauchen) :: D, Cstar, Vend, Vend1, value1, L1
         real(dp), dimension(length_grid_k,4) :: X
-        real(dp), dimension(4,4) :: XX, XXinv
+        real(dp), dimension(4,4) :: XXinv
         real(dp), dimension(4) :: betahat
         real(dp) :: diff, B1, B2, B3
 
@@ -950,27 +987,18 @@ contains
         call cashInHand(cih, length_grid_k, n_tauchen, y, grid_k)
 
         !Here we start the iterations.
-
         print *,"starting iterations"
         flush(6)
         do while((diff>toler) .and. (iter<MAX_ITER))
 
             iter=iter+1
 
-            !Compute the derivatives of Vtilda at the grid points only.
+            !Get optimal consumption
             !
-            ! A smarter way to do this - use the Euler condition. Would be nice if
-            ! we could just pass in a function pointer to the euler condition and calculate this.
-            D(1,:)=(valuefn(2,:)-valuefn(1,:))/stepVec(1)
-            D(length_grid_k,:)=(valuefn(length_grid_k,:)-valuefn(length_grid_k-1,:))/stepVec(length_grid_k-1)
-            do index_k = 2,length_grid_k-1
-                D(index_k,:)=(valuefn(index_k+1,:)-valuefn(index_k-1,:))/(stepVec(index_k)+stepVec(index_k-1))
-            enddo
-            Cstar=D**(-1/tau)
+            Cstar = getCStar(length_grid_k,n_tauchen,valuefn,stepVec)
 
-            !again, this is for a very specific value function. Any way  we could
-            ! pass in a function pointer?
-            Vend=1/(1-tau)*Cstar**(1-tau)+valuefn
+            !get optimal value function
+            Vend=getVStar(length_grid_k,n_tauchen,Cstar,valuefn)
 
             do index_z = 1,n_tauchen
                 Yend(:,index_z)=Cstar(:,index_z)+grid_k
@@ -985,7 +1013,7 @@ contains
 
             diff = maxval(abs(value1-valuefn))
             valuefn=value1
-            if (mod(iter,10)==0) then
+            if (mod(iter,50)==0) then
                 print *, 'subvalue: Iteration: ', iter, 'Tolerance ', diff
                 flush(6)
             end if
@@ -1246,7 +1274,7 @@ contains
         integer :: index_k, index_kp, index_z, previous_kp, index_maxk_so_far, flag
 
         real(dp), dimension(length_grid_k,n_tauchen) :: value_prov, g_lprov, g_kprov
-        real(dp) :: diff2, k, kp, z, mylabor, c, value_max_so_far, value_comp, value_refinement, l, mylaborold, mylabornew
+        real(dp) :: diff2, k, kp, z, mylabor, c, value_max_so_far, value_comp, value_refinement, mylaborold
 
 
         do index_k = 1, length_grid_k               ! Capital grid
@@ -1332,9 +1360,9 @@ program main
 
     real(DP), allocatable, dimension(:,:)  :: transition, transitioncdf, valuefn, g_k, g_c
     real(DP), allocatable, dimension(:)  :: y, grid_k, inputVars, outputVars
-    integer :: index_k, length_grid_k, i1, index_z, iter
+    integer :: index_k, length_grid_k, i1
     real(DP) :: k_ss, c_ss, y_ss
-    real(DP) :: cover, cover_tauchen, valueinitial, step1, diff
+    real(DP) :: cover, cover_tauchen, step1
 
     ! variables used for timing
     real (4) :: elapt, ta(2)
