@@ -30,6 +30,152 @@ MODULE nrtype
     END TYPE sprs2_dp
 END MODULE nrtype
 
+!
+! This module puts a wrapper around a "root" function. This way, we can
+! use it while still having it depend on a set of values we DONT want
+! the solver to change.
+! Note: I could do this with global variables, but they are always dangerous
+!       This is sort-of like creating an object (for those who are familiar
+!       with OO programming
+MODULE myRootWrapper
+    use nrtype
+    implicit none
+
+    !depending on whether your root function solves for arrays or elements
+    REAL(DP), allocatable ,DIMENSION(:) :: currentK, valueFun
+    PROCEDURE(template_ValueFunction), POINTER :: fp_value
+    PROCEDURE(template_RootFunction), POINTER :: fp_root
+    INTEGER::sizeCheck !variable to make sure we don't check size every time we solve value function
+    INTEGER::arraySize !variable to store size at initialization
+
+    private :: currentK, valueFun
+    private :: fp_value, fp_root
+    private :: sizeCheck, arraySize
+
+    ABSTRACT INTERFACE
+        !
+        ! An interface to your value function. It should have the same
+        ! parameter declarations as the actual function
+        ! to prevent potential memory leaks, need to pass in the size of the array
+        FUNCTION template_ValueFunction(n,k,k_prime) RESULT(y)
+            INTEGER, INTENT(in) :: n
+            REAL(8), DIMENSION(n), INTENT(in) :: k, k_prime
+            REAL, DIMENSION(n) :: y
+        END FUNCTION template_ValueFunction
+        !
+        ! An interface to your solver (i.e. root) function. It should have the same
+        ! parameter declarations as the actual function
+        ! Given that I don't know how the one you are using works, here I assume
+        ! that it takes a function pointer, the input variables, and the output variables.
+        ! it modifies the input variables so that the result of the function pointer is
+        ! the output variables
+        SUBROUTINE template_RootFunction(funcPointer,input,output)
+            PROCEDURE(valueFunctionWrapper), POINTER, INTENT(in) :: funcPointer
+            REAL(8), DIMENSION(:), INTENT(inout) :: input
+            REAL(8), DIMENSION(:), INTENT(in) :: output
+        END SUBROUTINE template_RootFunction
+
+    END INTERFACE
+
+CONTAINS
+
+    SUBROUTINE init(myKs, myValue, fp_valueFun, fp_rootFun)
+        !initialization of variables
+        REAL(DP), DIMENSION(:), INTENT(in) :: myKs, myValue
+        PROCEDURE(template_ValueFunction), POINTER, INTENT(in) :: fp_valueFun
+        PROCEDURE(template_RootFunction), POINTER, INTENT(in) :: fp_rootFun
+
+         !error check
+        arraySize = size(myKs,dim=1)
+        if(arraySize /= size(myValue,dim=1)) then
+            stop 'value and capital array do not match in size'
+        end if
+
+        allocate(currentK(arraySize))
+        allocate(valueFun(arraySize))
+
+        currentK = myKs
+        valueFun = myValue
+
+        fp_value => fp_valueFun
+        fp_root =>  fp_rootFun
+    END SUBROUTINE init
+
+    SUBROUTINE destroy()
+        !deallocate variables
+        sizeCheck=0
+        deallocate(currentK)
+        deallocate(valueFun)
+    END SUBROUTINE destroy
+
+    FUNCTION valueFunctionWrapper(k_prime) RESULT(v)
+        REAL(DP), DIMENSION(arraySize), INTENT(in) :: k_prime
+        REAL(DP), DIMENSION(arraySize) :: v
+        !error check
+        if(sizeCheck /= 1) THEN
+            sizeCheck = 1
+            if(arraySize /= size(k_prime,dim=1)) then
+                stop 'valueFunctionWrapper: value and next period capital array do not match in size'
+            end if
+        end if
+
+        v = fp_value(arraySize,currentK,k_prime)
+    END FUNCTION valueFunctionWrapper
+
+    SUBROUTINE execute_solve(k_prime)
+        REAL(DP), DIMENSION(arraySize), INTENT(inout) :: k_prime
+
+        PROCEDURE(valueFunctionWrapper), POINTER :: fp_vfw
+
+        fp_vfw => valueFunctionWrapper
+
+        call fp_root(fp_vfw, k_prime, valueFun)
+    END SUBROUTINE execute_solve
+
+END MODULE myRootWrapper
+
+
+!PROGRAM main
+!
+!    USE mywrapper
+!
+!    PROCEDURE(template_ValueFunction), POINTER :: func
+!    PROCEDURE(template_RootFunction), POINTER :: rootFunc
+!    REAL(8), DIMENSION(3) :: myKs, k_prime, myValue
+!
+!    myKs=(/ 1,2,3 /)
+!    k_prime=(/ 1,2,3 /)
+!    myValue=(/ 1,2,3 /)
+!
+!    func => valueFunction
+!    rootFunc => rootFunction
+!
+!    call  init(myKs, myValue, func, rootFunc)
+!    CALL execute_solve(k_prime)
+!    call destroy()
+!CONTAINS
+!
+!    SUBROUTINE rootFunction(funcPointer,input,output)
+!        implicit none
+!
+!        PROCEDURE(valueFunctionWrapper), POINTER, INTENT(in) :: funcPointer
+!       REAL(8), DIMENSION(:), INTENT(inout) :: input
+!        REAL(8), DIMENSION(:), INTENT(in) :: output
+!
+!        input = input+1
+!    END SUBROUTINE rootFunction
+!
+!
+!    FUNCTION valueFunction(n,k,k_prime) RESULT(y)
+!        INTEGER, INTENT(in) :: n
+!        REAL(8), DIMENSION(n), INTENT(in) :: k, k_prime
+!        REAL, DIMENSION(n) :: y
+!
+!        y=k+k_prime
+!    END FUNCTION valueFunction
+!END PROGRAM main
+
+
 ! This module specifies the model. Two samples are given here:
 !     1) Endogenous growth model with no labour
 !     2) Endogenous growth model with labour
