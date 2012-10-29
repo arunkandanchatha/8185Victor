@@ -242,6 +242,7 @@ contains
 
         shockCount = states
         capitalCount = steps
+        print *,'StepVec:' ,steps
         allocate(stepVec(steps))
         allocate(grid_k(steps))
         allocate(shocks(states))
@@ -902,8 +903,9 @@ contains
             xmin=xcentre*(1-xbounds);
         endif
         n=size(x)
+        i=size(stepVec)
 
-    print *, 'Beginning forall, n=',n
+    print *, 'Beginning forall, n=',n,': i=',i
     print *, ' '
     flush(6)
 
@@ -1272,7 +1274,7 @@ program main
     ! 1.5 Initialize modules
     !----------------------------------------------------------------
 
-    !    call initialize(length_grid_k)
+    call initialize(length_grid_k)
     call sub_modelInitialize(length_grid_k,n_tauchen)
 
     !----------------------------------------------------------------
