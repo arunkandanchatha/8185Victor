@@ -242,7 +242,6 @@ contains
 
         shockCount = states
         capitalCount = steps
-        print *,'StepVec:' ,steps
         allocate(stepVec(steps))
         allocate(grid_k(steps))
         allocate(shocks(states))
@@ -474,66 +473,46 @@ contains
         real(DP), dimension(:,:), INTENT(OUT) :: onCapital
         real(DP), dimension(:,:), INTENT(OUT) :: targetCapital
 
-        integer :: m,n, index_z
+        integer :: index_z
 
-        real(DP), allocatable, dimension(:,:) :: cih, Cstar
-
-        m=size(grid_k)
-        n=size(shocks)
-
-        allocate(cih(m,n))
-        allocate(Cstar(m,n))
+        real(DP), dimension(capitalCount,shockCount) :: cih, Cstar
 
         ! define the cash in hand array
-        call cashInHand(cih, m,n)
+        call cashInHand(cih)
 
         !Get optimal consumption
         !
-        Cstar = getCStar(m,n,fnToSolve)
+        Cstar = getCStar(fnToSolve)
 
         !get optimal value function
-        myGuess=getVStar(m,n,Cstar,fnToSolve)
+        myGuess=getVStar(Cstar,fnToSolve)
 
-        do index_z = 1,n
+        do index_z = 1,shockCount
             onCapital(:,index_z)=Cstar(:,index_z)+grid_k
             targetCapital(:,index_z)=cih(:,index_z)
         enddo
 
-        deallocate(cih)
-        deallocate(Cstar)
-
     end SUBROUTINE getNextGuess
 
-    SUBROUTINE cashInHand(outputVars, m, n)
+    SUBROUTINE cashInHand(outputVars)
             !
             ! This subroutine defines tomorrow's "cash in hand" using model parameters.
             !
-            ! INPUTS: m: the number of points on the k grid
-            !         n: the number of exogenous states
             ! OUTPUTS: outputVars - a m-by-n matrix representing the cash in hand function
-        integer, INTENT(IN) :: m, n
         real(DP), dimension(:,:), INTENT(OUT) :: outputVars
         real(DP), allocatable, dimension(:) :: newInput
         integer :: index_k, index_z
 
-        IF (size(grid_k,dim=1)/=m) THEN
-            PRINT '(a,i3)', 'cashInHand: grid_k must be a vector of size ',m
-            call sub_modelstop('program terminated in cash in hand')
-        END IF
-
-        IF (size(shocks,dim=1)/=n) THEN
-            PRINT '(a,i3)', 'cashInHand: shocks must be a vector of size ',n
-            call sub_modelstop('program terminated in cash in hand')
-        END IF
-        IF ( (size(outputVars,dim=1)/=m) .and. (size(outputVars,dim=2)/=n) ) THEN
-            PRINT '(a,i3)', 'cashInHand: outputVars must be a matrix of size ',m, '-by-',n
+        IF ( (size(outputVars,dim=1)/=capitalCount) .and. (size(outputVars,dim=2)/=shockCount) ) THEN
+            PRINT '(a,i3)', 'cashInHand: outputVars must be a matrix of size ',capitalCount,&
+                            & '-by-',shockCount
             call sub_modelstop('program terminated in cash in hand')
         END IF
 
         allocate(newInput(2))
-        do index_k = 1,m
+        do index_k = 1,capitalCount
             newInput(2)=grid_k(index_k)
-            do index_z = 1,n
+            do index_z = 1,shockCount
                 newInput(1)=shocks(index_z)
                 outputVars(index_k,index_z)=sub_modelOutput(newInput)
             end do
@@ -542,21 +521,19 @@ contains
 
     END SUBROUTINE cashInHand
 
-    FUNCTION getCStar(length_grid_k,n_tauchen,fnToSolve) RESULT(y)
+    FUNCTION getCStar(fnToSolve) RESULT(y)
         ! Get optimal consumption given the value function
         ! Note: The last step is from the envelope condition
-        INTEGER, INTENT(IN) :: length_grid_k
-        INTEGER, INTENT(IN) :: n_tauchen
-        REAL(DP), DIMENSION(length_grid_k,n_tauchen), INTENT(IN) :: fnToSolve
-        REAL(DP), DIMENSION(length_grid_k,n_tauchen) :: y
-        REAL(DP), DIMENSION(length_grid_k,n_tauchen) :: D
+        REAL(DP), DIMENSION(capitalCount,shockCount), INTENT(IN) :: fnToSolve
+        REAL(DP), DIMENSION(capitalCount,shockCount) :: y
+        REAL(DP), DIMENSION(capitalCount,shockCount) :: D
         INTEGER :: index_k
 
 #ifdef NEOCLASSICAL
         !use slope between points as an estimate of the derivative at that point
         D(1,:)=(fnToSolve(2,:)-fnToSolve(1,:))/stepVec(1)
-        D(length_grid_k,:)=(fnToSolve(length_grid_k,:)-fnToSolve(length_grid_k-1,:))/stepVec(length_grid_k-1)
-        do index_k = 2,length_grid_k-1
+        D(capitalCount,:)=(fnToSolve(capitalCount,:)-fnToSolve(capitalCount-1,:))/stepVec(capitalCount-1)
+        do index_k = 2,capitalCount-1
             D(index_k,:)=(fnToSolve(index_k+1,:)-fnToSolve(index_k-1,:))/(stepVec(index_k)+stepVec(index_k-1))
         enddo
         y=D**(-1/tau)
@@ -564,16 +541,14 @@ contains
 #ifdef AIYAGARI
     !In Aiyagari, we can directly use the euler conditition.
         REAL(DP) :: temp
-        do index_k=1,length_grid_k
+        do index_k=1,capitalCount
             D(index_k,:)=1/(1+r)*((1+r)*beta*())+
 #endif
     END FUNCTION getCStar
 
-    FUNCTION getVStar(length_grid_k,n_tauchen,Cstar,valuefn) RESULT(y)
-        INTEGER, INTENT(IN) :: length_grid_k
-        INTEGER, INTENT(IN) :: n_tauchen
-        REAL(DP), DIMENSION(length_grid_k,n_tauchen), INTENT(IN) :: valuefn, Cstar
-        REAL(DP), DIMENSION(length_grid_k,n_tauchen) :: y
+    FUNCTION getVStar(Cstar,valuefn) RESULT(y)
+        REAL(DP), DIMENSION(capitalCount,shockCount), INTENT(IN) :: valuefn, Cstar
+        REAL(DP), DIMENSION(capitalCount,shockCount) :: y
 
         y=1/(1-tau)*Cstar**(1-tau)+valuefn
     END FUNCTION
@@ -905,10 +880,6 @@ contains
         n=size(x)
         i=size(stepVec)
 
-    print *, 'Beginning forall, n=',n,': i=',i
-    print *, ' '
-    flush(6)
-
         FORALL(i=1:n) x(i)=(i-1)/real(n-1,WP)
         IF (s>0.0_WP) THEN
             x=x**s*(xmax-xmin)+xmin
@@ -1003,13 +974,14 @@ contains
     ! get new guess (inputs: initial guess, states; outputs: values, index for those values)
     ! interpolate between new guess and the proper initial values
     ! get new value function estimate
-    subroutine sub_endogenize(fnToSolve, grid_k, y, transition)
+    subroutine sub_endogenize(fnToSolve, grid_k, y, transition, g_k)
             ! The generalized endogenous grid method
             ! INPUTS: fnToSolve - The initial guess of the value function, size m-by-n
             !         grid_k - grid of possible capital values (..,ks,..), size m
             !         y - the possible shocks - size n
             !         transition - the transition matrix - size n-by-n
-            ! OUTPUT: valuefn - the final value function - size m-by-n
+            ! OUTPUT: fnToSolve - the final value function - size m-by-n
+            !         g_k - the solved capital levels
 
         implicit none
 
@@ -1017,6 +989,7 @@ contains
         real(DP), dimension(:), intent(in) :: grid_k
         real(DP), dimension(:), intent(in) :: y
         real(DP), dimension(:,:), intent(in) :: transition
+        real(DP), dimension(:,:), intent(out) :: g_k
 
         integer :: iter, index_k, index_z
         integer :: length_grid_k,m,n
@@ -1050,12 +1023,10 @@ contains
 
             iter=iter+1
 
-            !cstar is the next guess but on different capital
-            !Yend is the capital levels for which it is defined
             call getNextGuess(fnToSolve,newguess,oncapital,targetcapital)
-
             do index_z = 1,n
-                call sub_myinterp1(oncapital(:,index_z),newguess(:,index_z), targetcapital, length_grid_k, Vend1(:,index_z))
+                call sub_myinterp1(oncapital(:,index_z),newguess(:,index_z), targetcapital(:,index_z),&
+                        & length_grid_k, Vend1(:,index_z))
             enddo
 
             value1=sub_evaluate(Vend1)
@@ -1068,6 +1039,7 @@ contains
         enddo
 
         ! At this point the program recovers the endogenous grid for capital.
+        !Aside: If we have endogenized capital, this function should have no effect
         do index_k = 1,length_grid_k
             do index_z = 1,n_tauchen
                 call sub_kendogenousnewton(kend(index_k,index_z),oncapital(index_k,index_z),y(index_z),grid_k(index_k))
@@ -1075,11 +1047,12 @@ contains
         enddo
 
         ! Here we interpolate capital on the grid so that we can compare the results to the standard algorithm.
-!        do index_z = 1,n_tauchen
-!            call sub_myinterp1(kend(:,index_z),Vend(:,index_z), grid_k, length_grid_k, fnToSolve(:,index_z))
-!            call sub_myinterp1(kend(:,index_z),grid_k, grid_k, length_grid_k, g_k(:,index_z))
+        !Aside: If we have endogenized capital, the outputs of these to calls should be the same
+        do index_z = 1,n_tauchen
+            call sub_myinterp1(kend(:,index_z),newguess(:,index_z), grid_k, length_grid_k, fnToSolve(:,index_z))
+            call sub_myinterp1(kend(:,index_z),grid_k, grid_k, length_grid_k, g_k(:,index_z))
 !            call sub_myinterp1(kend(:,index_z),Cstar(:,index_z), grid_k, length_grid_k, g_c(:,index_z))
-!        enddo
+        enddo
 
         !
         !deallocate arrays
@@ -1091,139 +1064,6 @@ contains
         deallocate(value1)
         deallocate(kend)
     end subroutine sub_endogenize
-
-    subroutine sub_value(fnToSolve, g_k, g_c, grid_k, y, transition)
-            ! The actual value iteration function
-            ! INPUTS: fnToSolve - The initial guess of the value function, size m-by-n
-            !         grid_k - grid of possible capital values (..,ks,..), size m
-            !         y - the possible shocks - size n
-            !         transition - the transition matrix - size n-by-n
-            ! OUTPUT: g_c - interpolated value of consumption - size m-by-n
-            !         g_k - interpolated value of capital - size m-by-n
-            !         valuefn - the final value function - size m-by-n
-
-        implicit none
-
-        real(DP), dimension(:,:), intent(inout) :: fnToSolve
-        real(DP), dimension(:,:), intent(out) :: g_k, g_c
-        real(DP), dimension(:,:), intent(in) :: transition
-        real(DP), dimension(:), intent(in) :: grid_k
-        real(DP), dimension(:), intent(in) :: y
-
-        integer :: iter, index_k, index_z
-        integer :: length_grid_k,m,n
-
-        real(DP), allocatable, dimension(:,:) :: cih, D, Cstar, Vend, Vend1, Yend, value1, kend
-        real(DP) :: diff
-
-        length_grid_k=size(grid_k)
-        m=length_grid_k
-        n=n_tauchen
-        !
-        !do size checks
-        !
-        IF ((size(fnToSolve,dim=1)/=m) .or. (size(fnToSolve,dim=2)/=n)) THEN
-            PRINT '(a,i3,a,i3)', 'sub_value: valuefn must be a matrix of size ',m,' x ',n
-            call sub_mystop('program terminated by sub_value')
-        END IF
-        IF (size(y,dim=1)/=n) THEN
-            PRINT '(a,i3)', 'sub_value: y must be a vector of size ',n
-            call sub_mystop('program terminated by sub_value')
-        END IF
-        IF (size(transition,dim=1)/=n .or. size(transition,dim=2)/=n) THEN
-            PRINT '(a,i3,a,i3)', 'sub_value: transition must be a square matrix of size ',n,' x ',n
-            call sub_mystop('program terminated by sub_value')
-        END IF
-        IF ((size(g_k,dim=1)/=m) .or. (size(g_k,dim=2)/=n)) THEN
-            PRINT '(a,i3,a,i3)', 'sub_value: g_k must be a matrix of size ',m,' x ',n
-            call sub_mystop('program terminated by sub_value')
-        END IF
-        IF ((size(g_c,dim=1)/=m) .or. (size(g_c,dim=2)/=n)) THEN
-            PRINT '(a,i3,a,i3)', 'sub_value: g_c must be a matrix of size ',m,' x ',n
-            call sub_mystop('program terminated by sub_value')
-        END IF
-
-        !
-        !allocate arrays
-        !
-        allocate(cih(m,n))
-        allocate(D(m,n))
-        allocate(Cstar(m,n))
-        allocate(Vend(m,n))
-        allocate(Vend1(m,n))
-        allocate(Yend(m,n))
-        allocate(value1(m,n))
-        allocate(kend(m,n))
-
-        iter = 0
-        diff = 1000.d0
-
-        ! define the cash in hand array
-        call sub_modelSetStates(grid_k,y,transition)
-        call cashInHand(cih, length_grid_k, n_tauchen)
-
-        !Here we start the iterations.
-        print *,"starting iterations"
-        flush(6)
-        do while((diff>toler) .and. (iter<MAX_ITER))
-
-            iter=iter+1
-
-            !Get optimal consumption
-            !
-            Cstar = getCStar(length_grid_k,n_tauchen,fnToSolve)
-
-            !get optimal value function
-            Vend=getVStar(length_grid_k,n_tauchen,Cstar,fnToSolve)
-
-            do index_z = 1,n_tauchen
-                Yend(:,index_z)=Cstar(:,index_z)+grid_k
-                call sub_myinterp1(Yend(:,index_z),Vend(:,index_z), cih(:,index_z), length_grid_k, Vend1(:,index_z))
-            enddo
-
-            ! This is sort of model specific
-            do index_k = 1,length_grid_k
-                do index_z = 1,n_tauchen
-                    value1(index_k,index_z)=beta*dot_product(transition(index_z,:),Vend1(index_k,:))
-                enddo
-            enddo
-
-            diff = maxval(abs(value1-fnToSolve))
-            fnToSolve=value1
-            if (mod(iter,50)==0) then
-                print *, 'subvalue: Iteration: ', iter, 'Tolerance ', diff
-                flush(6)
-            end if
-        enddo
-
-        ! At this point the program recovers the endogenous grid for capital.
-        do index_k = 1,length_grid_k
-            do index_z = 1,n_tauchen
-                call sub_kendogenousnewton(kend(index_k,index_z),Yend(index_k,index_z),y(index_z),grid_k(index_k))
-            enddo
-        enddo
-
-        ! Here we interpolate capital on the grid so that we can compare the results to the standard algorithm.
-        do index_z = 1,n_tauchen
-            call sub_myinterp1(kend(:,index_z),Vend(:,index_z), grid_k, length_grid_k, fnToSolve(:,index_z))
-            call sub_myinterp1(kend(:,index_z),grid_k, grid_k, length_grid_k, g_k(:,index_z))
-            call sub_myinterp1(kend(:,index_z),Cstar(:,index_z), grid_k, length_grid_k, g_c(:,index_z))
-        enddo
-
-        !
-        !deallocate arrays
-        !
-        deallocate(cih)
-        deallocate(D)
-        deallocate(Cstar)
-        deallocate(Vend)
-        deallocate(Vend1)
-        deallocate(Yend)
-        deallocate(value1)
-        deallocate(kend)
-
-    end subroutine sub_value
-
 END MODULE endogenousGrid
 
 program main
@@ -1304,9 +1144,6 @@ program main
     allocate(g_k(length_grid_k,n_tauchen))
     allocate(g_c(length_grid_k,n_tauchen))
 
-    print *, 'Beginning grid gen'
-    print *, ' '
-    flush(6)
     call sub_grid_generation(grid_k, k_ss, cover, 2.D0)
 
     allocate(inputVars(3))
@@ -1316,23 +1153,14 @@ program main
     inputVars(2)=length_grid_k
     inputVars(3)=n_tauchen
 
-    print *, 'Beginning init'
-    print *, ' '
-    flush(6)
     call initFn(inputVars, outputVars)
-    call initValueFn(inputVars, outputVars)
-
     forall(index_k=1:length_grid_k, i1=1:n_tauchen) valuefn(index_k,i1)=outputVars((index_k-1)*n_tauchen+i1)
 
     deallocate(inputVars)
     deallocate(outputVars)
 
     !Here we call the subroutine to carry out the endogenous grid
-    print *, 'Beginning endogenize'
-    print *, ' '
-    flush(6)
-    call sub_endogenize(valuefn,grid_k,y,transition)
-!    call sub_value(valuefn,g_k,g_c,grid_k,y,transition)
+    call sub_endogenize(valuefn,grid_k,y,transition,g_k)
 
     call CPU_TIME(t2)
     delta_t=t2+t0-2.0d0*t1
