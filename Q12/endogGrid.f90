@@ -1,5 +1,5 @@
-#define NEOCLASSICAL
-!#define AIYAGARI
+!#define NEOCLASSICAL
+#define AIYAGARI
 MODULE nrtype
     INTEGER, PARAMETER :: I4B = SELECTED_INT_KIND(9)
     INTEGER, PARAMETER :: I2B = SELECTED_INT_KIND(4)
@@ -197,10 +197,14 @@ module modelDefinition
     real (DP), parameter :: delta  = 0.0196                         ! Depreciation
     real (DP), parameter :: alpha  = 0.4                            ! Capital Share
     real (DP), parameter :: tau    = 2.d0                           ! risk aversion
-    real (DP), parameter :: beta   = 0.9896                         ! Discount factor
+!    real (DP), parameter :: beta   = 0.9896                         ! Discount factor
+    real (DP), parameter :: beta   = 0.96                         ! Discount factor
     real (DP), parameter :: theta   = 0.357                         ! weight on consumption
     real (DP), parameter :: rho    = 0.95                           ! Autoregressive
     real (DP), parameter :: sigma  = 0.007                          ! Variance
+#ifdef AIYAGARI
+    real(DP), parameter :: r = .035
+#endif
 
     real(DP) :: k_ss, l_ss, c_ss, r_ss, y_ss
 
@@ -211,12 +215,16 @@ module modelDefinition
     real (DP), allocatable, dimension (:) :: stepVec                ! distance between subsequent capital values
     integer :: shockCount, capitalCount                             ! the size of the capital array and shock array
 #ifdef AIYAGARI
-    real(DP) :: w, r
+    real(DP) :: w
     private:: w,r
 #endif
 
     private::alpha, beta, tau, delta, theta, rho, sigma, transitionMatrix, stepVec, grid_k
     private:: k_ss, l_ss, c_ss, r_ss, y_ss
+
+#ifdef NEOCLASSICAL
+    private::cashInHand,getCStar,getVStar
+#endif
 
 contains
 
@@ -227,15 +235,11 @@ contains
         deallocate(grid_k)
     end subroutine sub_modelclean
 
-#ifdef NEOCLASSICAL
-    subroutine sub_modelInitialize(steps,states)
-#else
 #ifdef AIYAGARI
     subroutine sub_modelInitialize(steps,states,wage)
         integer, intent(in) :: wage
 #else
-    subroutine sub_modelInitialize(steps,states)
-#endif
+        subroutine sub_modelInitialize(steps,states)
 #endif
         integer, intent(in) :: states
         integer, intent(in) :: steps
@@ -247,7 +251,6 @@ contains
         allocate(shocks(states))
         allocate(transitionMatrix(states,states))
 #ifdef AIYAGARI
-        r=(1-.001)/beta-1
         w=wage
 #endif
     end subroutine sub_modelInitialize
@@ -258,13 +261,13 @@ contains
         REAL(DP), dimension(:,:), intent(in) :: transitionFunction
         integer :: n,m,index_k
 
-        n=size(grid_k,dim=1)
+        n=capitalCount
         IF (size(capital_grid,dim=1)/=n) THEN
             PRINT '(a,i3,a,i3)', 'sub_modelSetStates: capital_grid must be a matrix of size ',n
             call sub_modelstop('program terminated by sub_modelSetStates')
         END IF
 
-        m=size(transitionMatrix,dim=1)
+        m=shockCount
         IF (size(shocks_vector,dim=1)/=m) THEN
             PRINT '(a,i3,a,i3)', 'sub_modelSetStates: shocks_vector must be a matrix of size ',m
             call sub_modelstop('program terminated by sub_modelSetStates')
@@ -295,6 +298,7 @@ contains
 
         CHARACTER (LEN=*), intent(in) :: calling
         print *, "STOP: ", calling
+        flush(6)
         call sub_modelclean()
         STOP 0
     end subroutine sub_modelstop
@@ -321,8 +325,7 @@ contains
         a=inputVars(2)
 
         sub_modelOutput = (1+r)*a+z*w
-#endif
-
+#else
 #ifdef NEOCLASSICAL
         real(DP) :: z, k
 
@@ -330,6 +333,9 @@ contains
         k=inputVars(2)
 
         sub_modelOutput = exp(z)*k**alpha+(1-delta)*k
+#else
+        call sub_modelstop("Undefined model called in sub_modelOutput")
+#endif
 #endif
     end function sub_modelOutput
 
@@ -342,12 +348,22 @@ contains
 
         real(DP) :: sub_modelf_kp
         real(DP), dimension(:), intent(IN) :: inputVars
-        real(DP) :: z, k
 
+#ifdef AIYAGARI
+        real(DP) :: z
+        z=inputVars(1)
+        sub_modelf_kp = -1.0
+#else
+#ifdef NEOCLASSICAL
+        real(DP) :: z, k
         z=inputVars(1)
         k=inputVars(2)
 
         sub_modelf_kp = -alpha*exp(z)*k**(alpha-1)-(1-delta)
+#else
+        call sub_modelstop("Undefined model called in sub_modelf_kp")
+#endif
+#endif
     end function sub_modelf_kp
 
     function sub_modelf_lp(inputVars)
@@ -360,6 +376,9 @@ contains
         real(DP), dimension(:), intent(IN) :: inputVars
         real(DP) :: z, k, l
 
+#ifndef NEOCLASSICAL
+        call sub_modelstop("Undefined model called in sub_modelf_lp")
+#endif
         z=inputVars(1)
         k=inputVars(2)
         l=inputVars(3)
@@ -387,78 +406,40 @@ contains
 
         print *, 'Steady State values'
         print *, 'Output: ', y_ss, 'Capital: ', k_ss
-
+#else
+        call sub_modelstop("Undefined model calling steadystate")
+        outputVars(1) = 0
 #endif
     end subroutine steadystate
 
-    subroutine initFn(inputVars, outputVars)
+    subroutine initGuess(valueFn)
             ! This subroutine contains the calculations to initialize the initial guess of an increasing
-            ! function.
+            ! function. For example, if neoclassical, then the value function. If Aiyagari, then the asset function
             !
-            ! INPUTS: inputVars - a vector of input values. typicaly
-            !                         1) step1:  the step size
-            !                         2) m: the number of points on the k grid
-            ! OUTPUTS: outputVars - a vector (which is actually a linearized matrix) representing the initialized function
+            ! OUTPUTS: outputVars - a matrix representing the initialized function
             !
-            ! Note: To pass arrays, see the initValueFn subroutine below
         implicit none
 
-        real(DP), dimension(:), INTENT(IN) :: inputVars
-        real(DP), dimension(:), INTENT(OUT) :: outputVars
+        real(DP), dimension(capitalCount,shockCount), INTENT(OUT) :: valueFn
 
 #ifdef NEOCLASSICAL
-        real(DP) :: step1, valueinitial
-        integer :: index_k, i1, m, n
+        real(DP) :: valueinitial
+        integer :: index_k, i1
 
-        step1 = inputVars(1)
-        m = inputVars(2)
-        n = inputVars(3)
-
+        step1 = capitalCount
         valueinitial = (1/(1-beta))*c_ss**(1-tau)/(1-tau)
 
-        forall (index_k = 1:m, i1=1:n) outputVars((index_k-1)*n+i1) = index_k/step1 + valueinitial
-#endif
-
+        forall (index_k = 1:capitalCount, i1=1:shockCount) valueFn(index_k,i1) = index_k/step1 + valueinitial
+#else
 #ifdef AIYAGARI
-        step1 = inputVars(1)
-        m = inputVars(2)
-        n = inputVars(3)
+        integer :: index_k, i1
 
-        valueinitial = (1/(1-beta))*c_ss**(1-tau)/(1-tau)
-
-        forall (index_k = 1:m, i1=1:n) outputVars((index_k-1)*n+i1) = 0.
-
+        forall (index_k = 1:capitalCount, i1=1:shockCount) valueFn(index_k,i1) = 0.
+#else
+        call sub_modelstop("Undefined model calling initGuess")
 #endif
-    end subroutine initFn
-
-    subroutine initValueFn(inputVars, outputVars)
-            ! This subroutine contains the calculations to initialize the initial guess of an increasing
-            ! value function.
-            !
-            ! INPUTS: inputVars - a vector of input values. typicaly
-            !                         1) step1:  the step size
-            !                         2) m: the number of points on the k grid
-            !                         3) n: the number of exogenous states
-            ! OUTPUTS: outputVars - a vector (which is actually a linearized matrix) representing the value function
-            !
-            ! Note: To pass arrays, see the initValueFn subroutine below
-        implicit none
-
-        real(DP), dimension(:), INTENT(IN) :: inputVars
-        real(DP), dimension(:), INTENT(OUT) :: outputVars
-
-        real(DP) :: step1, valueinitial
-        integer :: index_k, i1, m, n
-
-        step1 = inputVars(1)
-        m = inputVars(2)
-        n = inputVars(3)
-
-        valueinitial = (1/(1-beta))*c_ss**(1-tau)/(1-tau)
-
-        forall (index_k = 1:m, i1=1:n) outputVars((index_k-1)*n+i1) = index_k/step1 + valueinitial
-    end subroutine initValueFn
-
+#endif
+    end subroutine initGuess
 
     SUBROUTINE getNextGuess(fnToSolve, myGuess, onCapital, targetCapital)
             ! This subroutine gives the next guess of the function we are endogenizing
@@ -468,13 +449,11 @@ contains
             !           myGuess - the guess of the next value
             !           onCapital - the capital levels for which the guess is evaluating
             !           targetCapital - the capital levels for which we want to evaluate according to model initialization
-        real(DP), dimension(:,:), INTENT(IN) :: fnToSolve
-        real(DP), dimension(:,:), INTENT(OUT) :: myGuess
-        real(DP), dimension(:,:), INTENT(OUT) :: onCapital
-        real(DP), dimension(:,:), INTENT(OUT) :: targetCapital
+        real(DP), dimension(capitalCount,shockCount), INTENT(IN) :: fnToSolve
+        real(DP), dimension(capitalCount,shockCount), INTENT(OUT) :: myGuess, onCapital,targetCapital
 
+#ifdef NEOCLASSICAL
         integer :: index_z
-
         real(DP), dimension(capitalCount,shockCount) :: cih, Cstar
 
         ! define the cash in hand array
@@ -491,8 +470,76 @@ contains
             onCapital(:,index_z)=Cstar(:,index_z)+grid_k
             targetCapital(:,index_z)=cih(:,index_z)
         enddo
+#else
+#ifdef AIYAGARI
+        ! We actually need to perform a little trick. The fnToSolve is a'', not a' (which is
+        ! stored in grid_k. We will use a' to find a, then return the following values:
+        !   myGuess: The theoretical a', which we will keep as the original a', i.e. grid_k
+        !   onCapital: This is the "a" given a'.
+        !   targetCapital: a' is the next policy function given a, and we want to then find the
+        !                  value of the policy function on a'. So this would be grid_k as well
+        !
+        !Note: sub_evaluate() will need to know this to properly return the next iteration of the
+        !      endogenous function
+        integer :: i,j
+        real(DP), dimension(capitalCount,shockCount) :: eul_temp
 
+        do i=1,capitalCount
+            do j=1,shockCount
+                eul_temp(i,j) = ((1.0_DP+r)*grid_k(i)+shocks(j)*w-fnToSolve(i,j))**(-tau)
+            end do
+        end do
+
+        eul_temp = transpose((1.0_DP+r)*beta*matmul(transitionMatrix,transpose(eul_temp)))
+        do i=1,capitalCount
+            do j=1,shockCount
+                oncapital(i,j)=(grid_k(i)-shocks(j)*w+eul_temp(i,j)**(-1/tau))/(1.0_DP+r)
+                myGuess(i,j)=grid_k(i)
+                targetCapital(i,j)=grid_k(i)
+            end do
+        end do
+#else
+        call sub_modelstop("Undefined model calling getNextGuess")
+#endif
+#endif
     end SUBROUTINE getNextGuess
+
+    FUNCTION sub_evaluate(valuefn) RESULT(y)
+            ! This subroutine assumes that you have already called getNextGuess. It then takes
+            ! the interpolated value returned by that function, and finds the next
+            ! guess guess of the function we are endogenizing
+            !
+            ! INPUTS: valuefn - the current values of the array
+            ! OUTPUTS: y - the guess of the next value
+        REAL(DP), DIMENSION(capitalCount,shockCount), INTENT(IN) :: valuefn
+        REAL(DP), DIMENSION(capitalCount,shockCount) :: y
+
+#ifdef NEOCLASSICAL
+        integer :: index_k, index_z
+        do index_k = 1,capitalCount
+            do index_z = 1,shockCount
+                y(index_k,index_z)=beta*dot_product(transitionMatrix(index_z,:),valuefn(index_k,:))
+            enddo
+        enddo
+#else
+#ifdef AIYAGARI
+            !In Aiyagari, valuefn is a''
+        integer :: i,j
+        !borrowing constraint
+        y=valueFn
+        do i=1,capitalCount
+            do j=1,shockCount
+                if (valuefn(i,j)<0) then
+                    y(i,j) = 0
+                end if
+            end do
+        end do
+#else
+        call sub_modelstop("Undefined model calling sub_evaluate")
+#endif
+#endif
+    end FUNCTION sub_evaluate
+
 
     SUBROUTINE cashInHand(outputVars)
             !
@@ -505,7 +552,7 @@ contains
 
         IF ( (size(outputVars,dim=1)/=capitalCount) .and. (size(outputVars,dim=2)/=shockCount) ) THEN
             PRINT '(a,i3)', 'cashInHand: outputVars must be a matrix of size ',capitalCount,&
-                            & '-by-',shockCount
+                & '-by-',shockCount
             call sub_modelstop('program terminated in cash in hand')
         END IF
 
@@ -526,10 +573,11 @@ contains
         ! Note: The last step is from the envelope condition
         REAL(DP), DIMENSION(capitalCount,shockCount), INTENT(IN) :: fnToSolve
         REAL(DP), DIMENSION(capitalCount,shockCount) :: y
+
+#ifdef NEOCLASSICAL
         REAL(DP), DIMENSION(capitalCount,shockCount) :: D
         INTEGER :: index_k
 
-#ifdef NEOCLASSICAL
         !use slope between points as an estimate of the derivative at that point
         D(1,:)=(fnToSolve(2,:)-fnToSolve(1,:))/stepVec(1)
         D(capitalCount,:)=(fnToSolve(capitalCount,:)-fnToSolve(capitalCount-1,:))/stepVec(capitalCount-1)
@@ -537,12 +585,9 @@ contains
             D(index_k,:)=(fnToSolve(index_k+1,:)-fnToSolve(index_k-1,:))/(stepVec(index_k)+stepVec(index_k-1))
         enddo
         y=D**(-1/tau)
-#endif
-#ifdef AIYAGARI
-    !In Aiyagari, we can directly use the euler conditition.
-        REAL(DP) :: temp
-        do index_k=1,capitalCount
-            D(index_k,:)=1/(1+r)*((1+r)*beta*())+
+#else
+        call sub_modelstop("Undefined model calling getCStar")
+        y=fnToSolve
 #endif
     END FUNCTION getCStar
 
@@ -552,19 +597,6 @@ contains
 
         y=1/(1-tau)*Cstar**(1-tau)+valuefn
     END FUNCTION
-
-    FUNCTION sub_evaluate(valuefn) RESULT(y)
-        REAL(DP), DIMENSION(capitalCount,shockCount), INTENT(IN) :: valuefn
-        REAL(DP), DIMENSION(capitalCount,shockCount) :: y
-
-        integer :: index_k, index_z
-
-            do index_k = 1,capitalCount
-                do index_z = 1,shockCount
-                    y(index_k,index_z)=beta*dot_product(transitionMatrix(index_z,:),valuefn(index_k,:))
-                enddo
-            enddo
-    end FUNCTION sub_evaluate
 
 
 END MODULE modelDefinition
@@ -585,17 +617,22 @@ MODULE  endogenousGrid
 
     real (DP), parameter :: delta  = 0.0196                         ! Depreciation
     real (DP), parameter :: alpha  = 0.4                            ! Capital Share
-    real (DP), parameter :: tau    = 2.d0                           ! risk aversion
+    real (DP), parameter :: tau    = 2.d0                           ! risk aversion (for consumption)
     real (DP), parameter :: beta   = 0.9896                         ! Discount factor
-    real (DP), parameter :: theta   = 0.357                         ! weight on consumption
+    real (DP), parameter :: theta   = 0.357                         ! weight on consumption (if we have labour)
     real (DP), parameter :: rho    = 0.95                           ! Autoregressive
     real (DP), parameter :: sigma  = 0.007                          ! Variance
 
     !----------------------------------------------------------------
     ! 2. Numerical parameters
     !----------------------------------------------------------------
+#ifdef NEOCLASSICAL
+    integer :: n_tauchen = 41                                   ! Number of shocks
+#endif
+#ifdef AIYAGARI
+    integer :: n_tauchen = 3                                   ! Number of shocks
+#endif
 
-    integer :: n_tauchen = 41                                   ! Number Tauchen points
     integer :: Tsimul    = 50000                                ! Number of simulations for the EEerror
 
     real (DP), parameter :: toler   = 1e-6                      ! Numerical tolerance
@@ -735,7 +772,7 @@ contains
         ! INPUTS: rho - serial correlation coefficient,
         !         sigma - coefficient of variation
         !         cover_tauchen - a spread variable for the sigma, not really sure about this
-        ! OUTPUT: y is the income states
+        ! OUTPUT: y is the probability states
         !         pi is an n-by-n matrix of Markov transition probabilities
         !         picum is an n-by-n matrix representing cdf of pi
 
@@ -899,7 +936,7 @@ contains
         ! Purpose:
         !
         ! INPUTS: x: Indexes for which f_x has values
-        !         f_x: values for each x value in "x"
+        !         f_x: values for each x value in "x" input
         !         xp: x values at which we want to find f_x (which we do through linear interpolation)
         !         length_x: the number of elements in x
         ! OUTPUT: interp_value
@@ -1019,25 +1056,28 @@ contains
         !Here we start the iterations.
         print *,"starting iterations"
         flush(6)
+        do index_z = 1,n
+            kend(:,index_z)=grid_k
+        end do
         do while((diff>toler) .and. (iter<MAX_ITER))
-
             iter=iter+1
 
             call getNextGuess(fnToSolve,newguess,oncapital,targetcapital)
             do index_z = 1,n
                 call sub_myinterp1(oncapital(:,index_z),newguess(:,index_z), targetcapital(:,index_z),&
-                        & length_grid_k, Vend1(:,index_z))
+                    & length_grid_k, Vend1(:,index_z))
             enddo
 
             value1=sub_evaluate(Vend1)
             diff = maxval(abs(value1-fnToSolve))
             fnToSolve=value1
-            if (mod(iter,50)==0) then
+            if (mod(iter,100)==0) then
                 print *, 'subvalue: Iteration: ', iter, 'Tolerance ', diff
                 flush(6)
             end if
         enddo
 
+#ifdef NEOCLASSICAL
         ! At this point the program recovers the endogenous grid for capital.
         !Aside: If we have endogenized capital, this function should have no effect
         do index_k = 1,length_grid_k
@@ -1051,8 +1091,11 @@ contains
         do index_z = 1,n_tauchen
             call sub_myinterp1(kend(:,index_z),newguess(:,index_z), grid_k, length_grid_k, fnToSolve(:,index_z))
             call sub_myinterp1(kend(:,index_z),grid_k, grid_k, length_grid_k, g_k(:,index_z))
-!            call sub_myinterp1(kend(:,index_z),Cstar(:,index_z), grid_k, length_grid_k, g_c(:,index_z))
+        !            call sub_myinterp1(kend(:,index_z),Cstar(:,index_z), grid_k, length_grid_k, g_c(:,index_z))
         enddo
+#else
+        g_k=fnToSolve
+#endif
 
         !
         !deallocate arrays
@@ -1078,6 +1121,9 @@ program main
     integer :: index_k, length_grid_k, i1
     real(DP) :: k_ss, c_ss, y_ss
     real(DP) :: cover, cover_tauchen, step1
+#ifdef AIYAGARI
+    real(DP):: a_min, a_max
+#endif
 
     ! variables used for timing
     real (4) :: elapt, ta(2)
@@ -1099,12 +1145,20 @@ program main
     allocate(y(n_tauchen))
 
     cover_tauchen = 3.d0
+#ifdef NEOCLASSICAL
     call sub_tauchen(y,transition,transitioncdf,rho,sigma,cover_tauchen)
-
     print *, ' '
     print *, 'For the stochastic shock, Tauchen`s approximation method with', n_tauchen , 'points will be used.'
     print *, ' '
     flush(6)
+#endif
+
+#ifdef AIYAGARI
+        transition(:,1) = (/.66_dp,.28_dp,.07_dp/)
+        transition(:,2)=(/.27_dp,.44_dp,.27_dp/)
+        transition(:,3)=(/.07_dp,.28_dp,.66_dp/)
+        y= (/.78_dp,1.0_dp,1.27_dp/)
+#endif
 
     cover = 0.25d0         ! Coverage of the grid (+- of steady state k)
     length_grid_k = 1000
@@ -1115,12 +1169,12 @@ program main
     !----------------------------------------------------------------
 
     call initialize(length_grid_k)
-    call sub_modelInitialize(length_grid_k,n_tauchen)
+    call sub_modelInitialize(length_grid_k,n_tauchen,1)
 
     !----------------------------------------------------------------
     ! 2. Computation of the Steady State
     !----------------------------------------------------------------
-
+#ifdef NEOCLASSICAL
     allocate(outputVars(3))
 
     call steadyState(outputVars)
@@ -1130,6 +1184,7 @@ program main
     k_ss = outputVars(3)
 
     deallocate(outputVars)
+#endif
 
     !----------------------------------------------------------------
     ! 3. Endogenous Grid algorithm
@@ -1144,20 +1199,16 @@ program main
     allocate(g_k(length_grid_k,n_tauchen))
     allocate(g_c(length_grid_k,n_tauchen))
 
+#ifdef NEOCLASSICAL
     call sub_grid_generation(grid_k, k_ss, cover, 2.D0)
+#endif
+#ifdef AIYAGARI
+    a_min=0.0
+    a_max=50
+    call sub_grid_generation(grid_k, a_min, a_max, 1.D0,1)
+#endif
 
-    allocate(inputVars(3))
-    allocate(outputVars(length_grid_k*n_tauchen))
-
-    inputVars(1)=step1
-    inputVars(2)=length_grid_k
-    inputVars(3)=n_tauchen
-
-    call initFn(inputVars, outputVars)
-    forall(index_k=1:length_grid_k, i1=1:n_tauchen) valuefn(index_k,i1)=outputVars((index_k-1)*n_tauchen+i1)
-
-    deallocate(inputVars)
-    deallocate(outputVars)
+    call initGuess(valueFn)
 
     !Here we call the subroutine to carry out the endogenous grid
     call sub_endogenize(valuefn,grid_k,y,transition,g_k)
@@ -1175,10 +1226,6 @@ program main
     open(unit=11,   file='value.txt', status = 'replace')
     write (11, '(5f20.10)') (valuefn(i1, :), i1 = 1,length_grid_k)
     close(11)
-
-    open(unit=12,   file='g_c.txt', status = 'replace')
-    write (12, '(5f20.10)') (g_c(i1, :), i1 = 1,length_grid_k)
-    close(12)
 
     open(unit=13,   file='g_k.txt', status = 'replace')
     write (13, '(5f20.10)') (g_k(i1, :), i1 = 1,length_grid_k)
