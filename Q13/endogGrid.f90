@@ -1428,7 +1428,7 @@ program main
 #endif
 
     cover = 0.25d0         ! Coverage of the grid (+- of steady state k)
-    length_grid_k = 5000
+    length_grid_k = 1000
     step1 = length_grid_k
 
     !----------------------------------------------------------------
@@ -1475,7 +1475,7 @@ program main
 #ifdef AIYAGARI
     a_min=0.0
     a_max=45
-    call sub_grid_generation(grid_k, a_min, a_max, 3.D0,1)
+    call sub_grid_generation(grid_k, a_min, a_max, 4.D0,1)
 #endif
 
     call initGuess(valueFn)
@@ -1490,8 +1490,7 @@ program main
 do i1=1,n_tauchen
     tempGrid(:,i1)=grid_k(:)
 end do
-!    call sub_lorenz(tempGrid,g_c,giniFn,giniVal,distrib)
-    call sub_lorenz(g_k,g_c,giniFn,giniVal,distrib)
+    call sub_lorenz(tempGrid,g_c,giniFn,giniVal,distrib)
     call vec2csv(grid_k,"assets.csv")
     call mat2csv(distrib,"cdfOfAssets.csv")
     call mat2csv(giniFn,"giniOfAssets.csv")
