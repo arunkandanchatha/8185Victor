@@ -197,7 +197,7 @@ module modelDefinition
     real (DP), parameter :: delta  = 0.0196                         ! Depreciation
     real (DP), parameter :: alpha  = 0.4                            ! Capital Share
     real (DP), parameter :: tau    = 2.d0                           ! risk aversion
-!    real (DP), parameter :: beta   = 0.9896                         ! Discount factor
+    !    real (DP), parameter :: beta   = 0.9896                         ! Discount factor
     real (DP), parameter :: beta   = 0.96                         ! Discount factor
     real (DP), parameter :: theta   = 0.357                         ! weight on consumption
     real (DP), parameter :: rho    = 0.95                           ! Autoregressive
@@ -205,6 +205,7 @@ module modelDefinition
 #ifdef AIYAGARI
     real(DP), parameter :: r = .035
 #endif
+    real (DP), parameter :: toler   = 1e-2                      ! Numerical tolerance
 
     real(DP) :: k_ss, l_ss, c_ss, r_ss, y_ss
 
@@ -221,6 +222,7 @@ module modelDefinition
 
     private::alpha, beta, tau, delta, theta, rho, sigma, transitionMatrix, stepVec, grid_k
     private:: k_ss, l_ss, c_ss, r_ss, y_ss
+    private :: toler
 
 #ifdef NEOCLASSICAL
     private::cashInHand,getCStar,getVStar
@@ -386,7 +388,7 @@ contains
         sub_modelf_lp = (1-alpha)*exp(z)*k**(alpha)*l**(-alpha)
     end function sub_modelf_lp
 
-    subroutine steadystate(outputVars)
+    subroutine steadyState(outputVars)
             ! This subroutine contains the calculations for steady state values.
             !
             ! OUTPUTS: outputVars - a vector of output values.
@@ -407,10 +409,64 @@ contains
         print *, 'Steady State values'
         print *, 'Output: ', y_ss, 'Capital: ', k_ss
 #else
-        call sub_modelstop("Undefined model calling steadystate")
+#ifdef AIYAGARI
+        ! return steady state of transition matrix
+        ! This is basically the eigenvector associated with the eigenvalue=1
+        real(DP), dimension(shockCount,shockCount) :: transition2,eigenVects
+        real(DP), dimension(shockCount) :: realEigenVals,imaginEigenVals
+        real(DP), dimension(5*shockCount) :: eigenWork
+        integer :: info,temp
+        real(DP) :: diff
+
+        transition2=transitionMatrix
+        call DGEEV('N','V',3,transition2,3,realEigenVals,imaginEigenVals,eigenVects,3,&
+            &eigenVects,3,eigenWork,5*shockCount,info)
+
+        if(info /= 0) then
+            print *,"steadyState: Error calculating steady state for model. Code: ",info
+            call sub_modelStop('steadyState')
+        end if
+
+        !find the eigenvetor that corresponds to the eigenvalue of 1
+        temp = 0
+        do info=1,shockCount
+            diff=abs(realEigenVals(info)-1.0_DP)
+            if (diff<toler) then
+
+                !make sure not imaginary
+                if(imaginEigenVals(info)<toler) then
+                    !if we have temp set already, then there is a problem, multiple
+                    ! eigenvalues = 1
+                    if(temp/=0)then
+                        print *,"steadyState: There are eigenvalues equal to 1: ",temp," and ",info
+                        flush(6)
+                        call sub_modelStop('steadyState')
+                    endif
+                    temp=info
+                    outputVars = eigenVects(:,info)
+                endif
+            endif
+        end do
+
+        !check to make sure we actually found one
+        if(temp == 0) then
+            print *,"steadyState: We did not find an eigenvalue with value 1"
+            do info=1,shockCount
+                print *,realEigenVals(info),"+",imaginEigenVals(info),"i"
+                flush(6)
+            enddo
+            call sub_modelStop('steadyState')
+        end if
+
+        !normalize the value so sums to one
+        outputVars=SQRT(SUM(outputVars**2))
+        outputVars=outputVars/SUM(outputVars)
+#else
+        call sub_modelstop("Undefined model calling steadyState")
         outputVars(1) = 0
 #endif
-    end subroutine steadystate
+#endif
+    end subroutine steadyState
 
     subroutine initGuess(valueFn)
             ! This subroutine contains the calculations to initialize the initial guess of an increasing
@@ -426,10 +482,9 @@ contains
         real(DP) :: valueinitial
         integer :: index_k, i1
 
-        step1 = capitalCount
         valueinitial = (1/(1-beta))*c_ss**(1-tau)/(1-tau)
 
-        forall (index_k = 1:capitalCount, i1=1:shockCount) valueFn(index_k,i1) = index_k/step1 + valueinitial
+        forall (index_k = 1:capitalCount, i1=1:shockCount) valueFn(index_k,i1) = index_k/real(capitalCount) + valueinitial
 #else
 #ifdef AIYAGARI
         integer :: index_k, i1
@@ -541,6 +596,10 @@ contains
     end FUNCTION sub_evaluate
 
 
+    ! Functions and subroutines below this point are "helper" routines. Basically, they are things
+    ! that are either necessary to implement the interface above, or they allow us to calculate
+    ! interesting results from the model we have defined.
+#ifdef NEOCLASSICAL
     SUBROUTINE cashInHand(outputVars)
             !
             ! This subroutine defines tomorrow's "cash in hand" using model parameters.
@@ -574,7 +633,6 @@ contains
         REAL(DP), DIMENSION(capitalCount,shockCount), INTENT(IN) :: fnToSolve
         REAL(DP), DIMENSION(capitalCount,shockCount) :: y
 
-#ifdef NEOCLASSICAL
         REAL(DP), DIMENSION(capitalCount,shockCount) :: D
         INTEGER :: index_k
 
@@ -585,10 +643,6 @@ contains
             D(index_k,:)=(fnToSolve(index_k+1,:)-fnToSolve(index_k-1,:))/(stepVec(index_k)+stepVec(index_k-1))
         enddo
         y=D**(-1/tau)
-#else
-        call sub_modelstop("Undefined model calling getCStar")
-        y=fnToSolve
-#endif
     END FUNCTION getCStar
 
     FUNCTION getVStar(Cstar,valuefn) RESULT(y)
@@ -597,7 +651,142 @@ contains
 
         y=1/(1-tau)*Cstar**(1-tau)+valuefn
     END FUNCTION
+#endif
 
+#ifdef AIYAGARI
+    subroutine sub_lorenz(initVals,cdf,lorenz,gini)
+        !maybe I should put this function somewhere else, but whatever.
+        !it calculates the lorenz distribution of the given income
+        !process using the supplied distribution
+        !
+        !   INPUTS:
+        !       1) initVals - the initial potential levels of wealth/assets/income/whatever
+        !       2) cdf - the ss cumulative distribution function
+        !   OUTPUT
+        !       1) lorenz - a 2-dimensional array representing the lorenz function
+        !                   1: the x values representing the cdf at each state
+
+        !       2) gini -
+        real(dp), dimension(capitalCount),intent(in) :: initVals,cdf
+        real(dp), dimension(capitalCount,2),intent(out) :: lorenz
+        real(dp), intent(out) :: gini
+        real(dp) ::sn
+        integer i
+
+        sn = sum(cdf*initVals)
+        forall (i =1:capitalCount) lorenz(i,1) = sum(cdf(1:i))
+        forall (i =1:capitalCount) lorenz(i,2) =sum(cdf(1:i)*initVals(1:i))/sn
+        gini=sum(lorenz(:,1)-lorenz(:,2))/sum(lorenz(:,1))
+    end subroutine sub_lorenz
+
+    subroutine sub_myinterp2(x,f_x,xp,length_x,interp_value)
+        ! Purpose:
+        !
+        ! INPUTS: x: Indexes for which f_x has values
+        !         f_x: values for each x value in "x" input
+        !         xp: x values at which we want to find f_x (which we do through linear interpolation)
+        !         length_x: the number of elements in x
+        ! OUTPUT: interp_value
+
+        implicit none
+
+        integer, intent(in) :: length_x
+
+        real(DP), dimension(length_x), intent(in) :: x, f_x, xp
+        real(DP), dimension(length_x), intent(out) :: interp_value
+
+        integer, dimension(1) :: x_min
+        integer :: index_k, x_index
+        real (DP) :: t
+
+
+        do index_k = 1,length_x
+
+            x_min = minloc(abs(x-xp(index_k)))
+            x_index = x_min(1)
+
+            if (xp(index_k)<x(x_index)) x_index = x_index-1
+            x_index = max(x_index,1)
+            x_index = min(x_index,length_x-1)
+            t = (f_x(x_index+1)-f_x(x_index))/(x(x_index+1)-x(x_index))
+            interp_value(index_k) = t*(xp(index_k)-x(x_index))+f_x(x_index)
+
+        enddo
+    end subroutine sub_myinterp2
+
+
+    subroutine sub_cdfi(incomeGrid, statDist)
+        !calculate the cumulative wealth distribution based on which shocks people get
+        ! statDist: Each row is a capital level, each column is for a stochastic shock
+        !I/O declarations
+        real(DP), dimension(capitalCount,shockCount), intent(in) :: incomeGrid !asset grid, inv policy func
+        real(DP), dimension(capitalCount,shockCount), intent(out) :: statDist !stationary dist
+        real(DP), dimension(capitalCount) :: invFunction
+        real(DP), dimension(shockCount)::ss
+
+        ! misc vars
+        integer(kind=4) :: i,j, counter
+        real(DP), dimension(capitalCount,shockCount) ::f_o, f_o_hat, f_n
+        real(DP) :: diff
+
+        counter = 0
+        invFunction=grid_k
+
+        !setting initial guess to uniform dist across asset grid.
+        do i=1,capitalCount
+            do j=1,shockCount
+                statDist(i,j) = (grid_k(i) - grid_k(1))/(grid_k(capitalCount)-grid_k(1)) *&
+                    dble(1.0_dp/shockCount)
+            end do
+        end do
+        f_n=statDist
+        diff=100
+
+        do while((diff>1e-6) .and. (counter<5000))
+
+            f_o=f_n
+
+            do i=1,shockCount
+                call &
+                    sub_myinterp2(incomeGrid(:,i),f_o(:,i),invFunction,capitalCount,f_o_hat(:,i))
+            end do
+
+            do i=1,capitalCount
+                do j=1,shockCount
+                    if(f_o_hat(i,j)>1.0_dp) then
+                        f_o_hat(i,j)=1.0_dp
+                    end if
+                    if (f_o_hat(i,j)<0.0_dp) then
+                        f_o_hat(i,j)=0.0_dp
+                    end if
+
+                end do
+            end do
+
+            f_n = transpose(matmul(transitionMatrix, transpose(f_o_hat)))
+
+            diff = maxval(abs(f_n - f_o))
+            counter = counter+1
+            if (mod(counter,100)==0) then
+                print*,"CDF Iteration: ",counter
+            end if
+        end do
+
+        print*,"CDF iteration completed in ", counter, " iterations"
+        statDist = f_n
+
+        do j=0,capitalCount-1
+            statDist(capitalCount-j,:) = statDist(capitalCount-j,:) - statDist(capitalCount-j-1,:)
+        end do
+        statDist(1,:) = 1-sum(statDist(2:capitalCount,:),dim=1)
+
+        !we need to scale to the steady state
+        call steadyState(ss)
+        forall(j=1:shockCount) statDist(:,j) = ss(j)*statDist(:,j)
+
+
+    end subroutine sub_cdfi
+#endif
 
 END MODULE modelDefinition
 
@@ -640,7 +829,8 @@ MODULE  endogenousGrid
     real (DP), allocatable, dimension (:) :: stepVec            ! possible exogenous shocks
     integer :: i1
 
-    private :: sub_myinterp1, sub_kendogenousnewton
+    !    private :: sub_myinterp1, sub_kendogenousnewton
+    private :: sub_kendogenousnewton
     private :: i1
 
 contains
@@ -1118,6 +1308,7 @@ program main
 
     real(DP), allocatable, dimension(:,:)  :: transition, transitioncdf, valuefn, g_k, g_c
     real(DP), allocatable, dimension(:)  :: y, grid_k, inputVars, outputVars
+    real(DP), allocatable, dimension(:,:)  :: distrib
     integer :: index_k, length_grid_k, i1
     real(DP) :: k_ss, c_ss, y_ss
     real(DP) :: cover, cover_tauchen, step1
@@ -1154,14 +1345,14 @@ program main
 #endif
 
 #ifdef AIYAGARI
-        transition(:,1) = (/.66_dp,.28_dp,.07_dp/)
-        transition(:,2)=(/.27_dp,.44_dp,.27_dp/)
-        transition(:,3)=(/.07_dp,.28_dp,.66_dp/)
-        y= (/.78_dp,1.0_dp,1.27_dp/)
+    transition(:,1) = (/.66_dp,.28_dp,.07_dp/)
+    transition(:,2)=(/.27_dp,.44_dp,.27_dp/)
+    transition(:,3)=(/.07_dp,.28_dp,.66_dp/)
+    y= (/.78_dp,1.0_dp,1.27_dp/)
 #endif
 
     cover = 0.25d0         ! Coverage of the grid (+- of steady state k)
-    length_grid_k = 1000
+    length_grid_k = 20
     step1 = length_grid_k
 
     !----------------------------------------------------------------
@@ -1169,8 +1360,11 @@ program main
     !----------------------------------------------------------------
 
     call initialize(length_grid_k)
+#ifdef NEOCLASSICAL
+    call sub_modelInitialize(length_grid_k,n_tauchen)
+#else
     call sub_modelInitialize(length_grid_k,n_tauchen,1)
-
+#endif
     !----------------------------------------------------------------
     ! 2. Computation of the Steady State
     !----------------------------------------------------------------
@@ -1198,13 +1392,14 @@ program main
     allocate(valuefn(length_grid_k,n_tauchen))
     allocate(g_k(length_grid_k,n_tauchen))
     allocate(g_c(length_grid_k,n_tauchen))
+    allocate(distrib(length_grid_k,n_tauchen))
 
 #ifdef NEOCLASSICAL
     call sub_grid_generation(grid_k, k_ss, cover, 2.D0)
 #endif
 #ifdef AIYAGARI
     a_min=0.0
-    a_max=50
+    a_max=45
     call sub_grid_generation(grid_k, a_min, a_max, 1.D0,1)
 #endif
 
@@ -1213,6 +1408,13 @@ program main
     !Here we call the subroutine to carry out the endogenous grid
     call sub_endogenize(valuefn,grid_k,y,transition,g_k)
 
+#ifdef AIYAGARI
+    allocate(outputVars(3))
+    call steadyState(outputVars)
+    print *,outputVars
+    call sub_cdfi(g_k,distrib)
+    deallocate(outputVars)
+#endif
     call CPU_TIME(t2)
     delta_t=t2+t0-2.0d0*t1
     print *, ' '
@@ -1235,6 +1437,12 @@ program main
     ! 5. cleanup
     !----------------------------------------------------------------
     call clean()
+
+    deallocate(grid_k)
+    deallocate(valuefn)
+    deallocate(g_k)
+    deallocate(g_c)
+    deallocate(distrib)
 
     elapt = etime(ta)
     write (*,*), ' '
