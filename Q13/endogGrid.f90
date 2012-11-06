@@ -32,6 +32,45 @@ MODULE nrtype
     END TYPE sprs2_dp
 END MODULE nrtype
 
+MODULE utils
+    use nrtype
+    implicit none
+contains
+subroutine mat2csv(A,fname)
+    real(8), dimension(:,:), intent(in) :: A
+    character(LEN=*), intent(in) :: fname
+    CHARACTER(LEN=*), PARAMETER  :: FMT = "(G20.12)"
+    CHARACTER(LEN=20) :: FMT_1
+    integer :: r,c,ri,ci
+    r = size(A,1)
+    c = size(A,2)
+    open(1, file=fname)
+    write(FMT_1, "(A1,I2,A7)") "(", c, "G20.12)"
+    do ri=1,r
+        write(1,FMT_1) (A(ri,ci), ci = 1,c)
+        !do ci = 1,c-1
+        !   write(1,FMT, advance='no') A(ri,ci)
+        !enddo
+        !write(1,*) A(ri,c)
+    enddo
+    close(1)
+
+end subroutine mat2csv
+
+subroutine vec2csv(A,fname)
+    real(8), dimension(:), intent(in) :: A
+    character(LEN=*), intent(in) :: fname
+    integer :: r,ri
+    r = size(A,1)
+    open(1, file=fname)
+    do ri=1,r
+        write(1,*) A(ri)
+    end do
+    close(1)
+
+end subroutine vec2csv
+end MODULE utils
+
 !
 ! This module puts a wrapper around a "root" function. This way, we can
 ! use it while still having it depend on a set of values we DONT want
@@ -654,28 +693,41 @@ contains
 #endif
 
 #ifdef AIYAGARI
-    subroutine sub_lorenz(initVals,cdf,lorenz,gini)
+    subroutine sub_lorenz(policyFn,invFn,lorenz,gini,statDistrib)
         !maybe I should put this function somewhere else, but whatever.
         !it calculates the lorenz distribution of the given income
         !process using the supplied distribution
         !
-        !   INPUTS:
-        !       1) initVals - the initial potential levels of wealth/assets/income/whatever
-        !       2) cdf - the ss cumulative distribution function
+        !   INPUTS: poilcyFn: The result of the endogenous grid calculation
         !   OUTPUT
         !       1) lorenz - a 2-dimensional array representing the lorenz function
         !                   1: the x values representing the cdf at each state
 
-        !       2) gini -
-        real(dp), dimension(capitalCount),intent(in) :: initVals,cdf
+        !       2) gini - the actual gini value
+        real(dp), dimension(capitalCount,shockCount),intent(in) :: policyFn,invFn
         real(dp), dimension(capitalCount,2),intent(out) :: lorenz
         real(dp), intent(out) :: gini
-        real(dp) ::sn
-        integer i
+        real(dp), dimension(capitalCount,shockCount),intent(out) :: statDistrib
+        real(dp), dimension(capitalCount)::temp
+        real(dp)::sn,temp2
+        integer i,j
 
-        sn = sum(cdf*initVals)
-        forall (i =1:capitalCount) lorenz(i,1) = sum(cdf(1:i))
-        forall (i =1:capitalCount) lorenz(i,2) =sum(cdf(1:i)*initVals(1:i))/sn
+        call sub_stationaryDistrib(policyFn,invFn,statDistrib)
+
+        do i=1,capitalCount
+            temp2=0.0_dp
+            do j=1,shockCount
+                temp2=temp2+statDistrib(i,j)
+            end do
+            temp(i)=temp2
+         end do
+
+        sn = sum(temp*grid_k)
+
+        forall (i =1:capitalCount) lorenz(i,1) = sum(temp(1:i))
+        do i = 1,capitalCount
+            lorenz(i,2) =sum(temp(1:i)*policyFn(1:i,1))/sn
+        end do
         gini=sum(lorenz(:,1)-lorenz(:,2))/sum(lorenz(:,1))
     end subroutine sub_lorenz
 
@@ -715,51 +767,74 @@ contains
     end subroutine sub_myinterp2
 
 
-    subroutine sub_cdfi(incomeGrid, statDist)
+    subroutine sub_stationaryDistrib(incomeGrid, invFunction2, statDist)
         !calculate the cumulative wealth distribution based on which shocks people get
         ! statDist: Each row is a capital level, each column is for a stochastic shock
         !I/O declarations
-        real(DP), dimension(capitalCount,shockCount), intent(in) :: incomeGrid !asset grid, inv policy func
-        real(DP), dimension(capitalCount,shockCount), intent(out) :: statDist !stationary dist
-        real(DP), dimension(capitalCount) :: invFunction
+        real(DP), dimension(capitalCount,shockCount), intent(in) :: incomeGrid,invFunction2 !asset grid, inv policy func
+        real(DP), dimension(capitalCount,shockCount), intent(out) :: statDist !stationary dist (note: pdf, not cdf)
         real(DP), dimension(shockCount)::ss
 
         ! misc vars
         integer(kind=4) :: i,j, counter
         real(DP), dimension(capitalCount,shockCount) ::f_o, f_o_hat, f_n
         real(DP) :: diff
+        real(DP), dimension(capitalCount,shockCount) :: invFunction
+        invFunction = invFunction2
 
         counter = 0
-        invFunction=grid_k
 
         !setting initial guess to uniform dist across asset grid.
         do i=1,capitalCount
             do j=1,shockCount
-                statDist(i,j) = (grid_k(i) - grid_k(1))/(grid_k(capitalCount)-grid_k(1)) *&
+                statDist(i,j) = (incomeGrid(i,j) - incomeGrid(1,j))/(incomeGrid(capitalCount,j)-incomeGrid(1,j)) *&
                     dble(1.0_dp/shockCount)
             end do
         end do
+
         f_n=statDist
         diff=100
 
-        do while((diff>1e-6) .and. (counter<5000))
+        do while((diff>1.0e-4) .and. (counter<5000))
 
             f_o=f_n
 
             do i=1,shockCount
                 call &
-                    sub_myinterp2(incomeGrid(:,i),f_o(:,i),invFunction,capitalCount,f_o_hat(:,i))
+                    sub_myinterp2(incomeGrid(:,i),f_o(:,i),invFunction(:,i),capitalCount,f_o_hat(:,i))
             end do
 
-            do i=1,capitalCount
-                do j=1,shockCount
+            do j=1,shockCount
+                diff=-1e-5
+                do i=1,capitalCount
                     if(f_o_hat(i,j)>1.0_dp) then
                         f_o_hat(i,j)=1.0_dp
-                    end if
-                    if (f_o_hat(i,j)<0.0_dp) then
+                    else if (f_o_hat(i,j)<0.0_dp) then
                         f_o_hat(i,j)=0.0_dp
+                    else if (isnan(f_o_hat(i,j))) then
+                        print *, "Error: f_o_hat is NAN. Counter:",counter," element: ", i, " shock: ",j
+                        print *,"incomeGrid"
+                        print *,incomeGrid(:,j)
+                        print *,"invFunction"
+                        print *,invFunction(:,j)
+                        print *,"f_o"
+                        print *,f_o(:,j)
+                        print *,"f_o_hat"
+                        print *,f_o_hat(:,j)
+                        call sub_modelStop("sub_stationaryDistrib")
                     end if
 
+                !add a test: if non-monotonic, fail
+                if(diff>f_o_hat(i,j)) then
+                    print *, "Error: Non-monotonic cdf function. Counter:",counter," element: ", i, " shock: ",j,&
+                                &" value_old: ",diff, " value_new: ",f_o_hat(i,j)
+                    print *,"f_o"
+                    print *,f_o(:,j)
+                    print *,"f_o_hat"
+                    print *,f_o_hat(:,j)
+                    call sub_modelStop("sub_stationaryDistrib")
+                end if
+                diff=f_o_hat(i,j)
                 end do
             end do
 
@@ -768,11 +843,10 @@ contains
             diff = maxval(abs(f_n - f_o))
             counter = counter+1
             if (mod(counter,100)==0) then
-                print*,"CDF Iteration: ",counter
+                print*,"sub_stationaryDistrib Iteration: ",counter, " diff: ",diff
             end if
         end do
 
-        print*,"CDF iteration completed in ", counter, " iterations"
         statDist = f_n
 
         do j=0,capitalCount-1
@@ -785,7 +859,7 @@ contains
         forall(j=1:shockCount) statDist(:,j) = ss(j)*statDist(:,j)
 
 
-    end subroutine sub_cdfi
+    end subroutine sub_stationaryDistrib
 #endif
 
 END MODULE modelDefinition
@@ -1201,7 +1275,7 @@ contains
     ! get new guess (inputs: initial guess, states; outputs: values, index for those values)
     ! interpolate between new guess and the proper initial values
     ! get new value function estimate
-    subroutine sub_endogenize(fnToSolve, grid_k, y, transition, g_k)
+    subroutine sub_endogenize(fnToSolve, grid_k, y, transition, g_k, g_i)
             ! The generalized endogenous grid method
             ! INPUTS: fnToSolve - The initial guess of the value function, size m-by-n
             !         grid_k - grid of possible capital values (..,ks,..), size m
@@ -1209,6 +1283,7 @@ contains
             !         transition - the transition matrix - size n-by-n
             ! OUTPUT: fnToSolve - the final value function - size m-by-n
             !         g_k - the solved capital levels
+            !         g_i - the inverse policy function
 
         implicit none
 
@@ -1216,7 +1291,7 @@ contains
         real(DP), dimension(:), intent(in) :: grid_k
         real(DP), dimension(:), intent(in) :: y
         real(DP), dimension(:,:), intent(in) :: transition
-        real(DP), dimension(:,:), intent(out) :: g_k
+        real(DP), dimension(:,:), intent(out) :: g_k,g_i
 
         integer :: iter, index_k, index_z
         integer :: length_grid_k,m,n
@@ -1269,7 +1344,6 @@ contains
 
 #ifdef NEOCLASSICAL
         ! At this point the program recovers the endogenous grid for capital.
-        !Aside: If we have endogenized capital, this function should have no effect
         do index_k = 1,length_grid_k
             do index_z = 1,n_tauchen
                 call sub_kendogenousnewton(kend(index_k,index_z),oncapital(index_k,index_z),y(index_z),grid_k(index_k))
@@ -1277,14 +1351,15 @@ contains
         enddo
 
         ! Here we interpolate capital on the grid so that we can compare the results to the standard algorithm.
-        !Aside: If we have endogenized capital, the outputs of these to calls should be the same
         do index_z = 1,n_tauchen
             call sub_myinterp1(kend(:,index_z),newguess(:,index_z), grid_k, length_grid_k, fnToSolve(:,index_z))
             call sub_myinterp1(kend(:,index_z),grid_k, grid_k, length_grid_k, g_k(:,index_z))
-        !            call sub_myinterp1(kend(:,index_z),Cstar(:,index_z), grid_k, length_grid_k, g_c(:,index_z))
+!            call sub_myinterp1(kend(:,index_z),Cstar(:,index_z), grid_k, length_grid_k, g_c(:,index_z))
         enddo
+        g_i=oncapital
 #else
         g_k=fnToSolve
+        g_i=oncapital
 #endif
 
         !
@@ -1303,17 +1378,18 @@ program main
     use nrtype
     use endogenousGrid
     use modelDefinition
+    use utils
 
     implicit none
 
-    real(DP), allocatable, dimension(:,:)  :: transition, transitioncdf, valuefn, g_k, g_c
+    real(DP), allocatable, dimension(:,:)  :: transition, transitioncdf, valuefn, g_k, g_c,tempGrid
     real(DP), allocatable, dimension(:)  :: y, grid_k, inputVars, outputVars
-    real(DP), allocatable, dimension(:,:)  :: distrib
     integer :: index_k, length_grid_k, i1
     real(DP) :: k_ss, c_ss, y_ss
     real(DP) :: cover, cover_tauchen, step1
 #ifdef AIYAGARI
-    real(DP):: a_min, a_max
+    real(DP):: a_min, a_max, giniVal
+    real(DP), allocatable, dimension(:,:)  :: distrib, giniFn
 #endif
 
     ! variables used for timing
@@ -1352,7 +1428,7 @@ program main
 #endif
 
     cover = 0.25d0         ! Coverage of the grid (+- of steady state k)
-    length_grid_k = 20
+    length_grid_k = 5000
     step1 = length_grid_k
 
     !----------------------------------------------------------------
@@ -1392,7 +1468,6 @@ program main
     allocate(valuefn(length_grid_k,n_tauchen))
     allocate(g_k(length_grid_k,n_tauchen))
     allocate(g_c(length_grid_k,n_tauchen))
-    allocate(distrib(length_grid_k,n_tauchen))
 
 #ifdef NEOCLASSICAL
     call sub_grid_generation(grid_k, k_ss, cover, 2.D0)
@@ -1400,20 +1475,27 @@ program main
 #ifdef AIYAGARI
     a_min=0.0
     a_max=45
-    call sub_grid_generation(grid_k, a_min, a_max, 1.D0,1)
+    call sub_grid_generation(grid_k, a_min, a_max, 3.D0,1)
 #endif
 
     call initGuess(valueFn)
 
     !Here we call the subroutine to carry out the endogenous grid
-    call sub_endogenize(valuefn,grid_k,y,transition,g_k)
+    call sub_endogenize(valuefn,grid_k,y,transition,g_k,g_c)
 
 #ifdef AIYAGARI
-    allocate(outputVars(3))
-    call steadyState(outputVars)
-    print *,outputVars
-    call sub_cdfi(g_k,distrib)
-    deallocate(outputVars)
+    allocate(distrib(length_grid_k,n_tauchen))
+    allocate(giniFn(length_grid_k,2))
+    allocate(tempGrid(length_grid_k,n_tauchen))
+do i1=1,n_tauchen
+    tempGrid(:,i1)=grid_k(:)
+end do
+!    call sub_lorenz(tempGrid,g_c,giniFn,giniVal,distrib)
+    call sub_lorenz(g_k,g_c,giniFn,giniVal,distrib)
+    call vec2csv(grid_k,"assets.csv")
+    call mat2csv(distrib,"cdfOfAssets.csv")
+    call mat2csv(giniFn,"giniOfAssets.csv")
+    print *,"GiniVal: ",giniVal
 #endif
     call CPU_TIME(t2)
     delta_t=t2+t0-2.0d0*t1
