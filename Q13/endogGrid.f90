@@ -1,6 +1,8 @@
 !#define NEOCLASSICAL
 #define AIYAGARI
+#define HHSIMULATE
 MODULE nrtype
+    INTEGER, PARAMETER :: I8B = KIND(1_8)
     INTEGER, PARAMETER :: I4B = SELECTED_INT_KIND(9)
     INTEGER, PARAMETER :: I2B = SELECTED_INT_KIND(4)
     INTEGER, PARAMETER :: I1B = SELECTED_INT_KIND(2)
@@ -36,39 +38,39 @@ MODULE utils
     use nrtype
     implicit none
 contains
-subroutine mat2csv(A,fname)
-    real(8), dimension(:,:), intent(in) :: A
-    character(LEN=*), intent(in) :: fname
-    CHARACTER(LEN=*), PARAMETER  :: FMT = "(G20.12)"
-    CHARACTER(LEN=20) :: FMT_1
-    integer :: r,c,ri,ci
-    r = size(A,1)
-    c = size(A,2)
-    open(1, file=fname)
-    write(FMT_1, "(A1,I2,A7)") "(", c, "G20.12)"
-    do ri=1,r
-        write(1,FMT_1) (A(ri,ci), ci = 1,c)
-        !do ci = 1,c-1
-        !   write(1,FMT, advance='no') A(ri,ci)
-        !enddo
-        !write(1,*) A(ri,c)
-    enddo
-    close(1)
+    subroutine mat2csv(A,fname)
+        real(8), dimension(:,:), intent(in) :: A
+        character(LEN=*), intent(in) :: fname
+        CHARACTER(LEN=*), PARAMETER  :: FMT = "(G20.12)"
+        CHARACTER(LEN=20) :: FMT_1
+        integer :: r,c,ri,ci
+        r = size(A,1)
+        c = size(A,2)
+        open(1, file=fname)
+        write(FMT_1, "(A1,I2,A7)") "(", c, "G20.12)"
+        do ri=1,r
+            write(1,FMT_1) (A(ri,ci), ci = 1,c)
+            !do ci = 1,c-1
+            !   write(1,FMT, advance='no') A(ri,ci)
+            !enddo
+            !write(1,*) A(ri,c)
+        enddo
+        close(1)
 
-end subroutine mat2csv
+    end subroutine mat2csv
 
-subroutine vec2csv(A,fname)
-    real(8), dimension(:), intent(in) :: A
-    character(LEN=*), intent(in) :: fname
-    integer :: r,ri
-    r = size(A,1)
-    open(1, file=fname)
-    do ri=1,r
-        write(1,*) A(ri)
-    end do
-    close(1)
+    subroutine vec2csv(A,fname)
+        real(8), dimension(:), intent(in) :: A
+        character(LEN=*), intent(in) :: fname
+        integer :: r,ri
+        r = size(A,1)
+        open(1, file=fname)
+        do ri=1,r
+            write(1,*) A(ri)
+        end do
+        close(1)
 
-end subroutine vec2csv
+    end subroutine vec2csv
 end MODULE utils
 
 !
@@ -243,8 +245,13 @@ module modelDefinition
     real (DP), parameter :: sigma  = 0.007                          ! Variance
 #ifdef AIYAGARI
     real(DP), parameter :: r = .035
+#ifdef HHSIMULATE
+    integer, parameter :: numHouseholds = 10000                    ! The number of households to simulate
 #endif
+#endif
+
     real (DP), parameter :: toler   = 1e-2                      ! Numerical tolerance
+    integer, parameter :: MODEL_MAX_ITER   = 5000                      ! Numerical tolerance
 
     real(DP) :: k_ss, l_ss, c_ss, r_ss, y_ss
 
@@ -274,6 +281,8 @@ contains
         deallocate(transitionMatrix)
         deallocate(shocks)
         deallocate(grid_k)
+
+
     end subroutine sub_modelclean
 
 #ifdef AIYAGARI
@@ -328,6 +337,7 @@ contains
         do index_k = 1,m
             transitionMatrix(index_k,:)=transitionFunction(index_k,:)
         end do
+
     end subroutine sub_modelSetStates
 
 
@@ -694,11 +704,11 @@ contains
 
 #ifdef AIYAGARI
     subroutine sub_lorenz(policyFn,invFn,lorenz,gini,statDistrib)
-        !maybe I should put this function somewhere else, but whatever.
-        !it calculates the lorenz distribution of the given income
-        !process using the supplied distribution
-        !
-        !   INPUTS: poilcyFn: The result of the endogenous grid calculation
+        !For index i, we have the following relationship:
+        !             policyFn(i)=g(invFn(i))
+        !   INPUTS:
+        !       1) policyFn: The result of the endogenous grid calculation
+        !       2) invFn : The choice of k given k'
         !   OUTPUT
         !       1) lorenz - a 2-dimensional array representing the lorenz function
         !                   1: the x values representing the cdf at each state
@@ -720,13 +730,13 @@ contains
                 temp2=temp2+statDistrib(i,j)
             end do
             temp(i)=temp2
-         end do
+        end do
 
         sn = sum(temp*grid_k)
 
         forall (i =1:capitalCount) lorenz(i,1) = sum(temp(1:i))
         do i = 1,capitalCount
-            lorenz(i,2) =sum(temp(1:i)*policyFn(1:i,1))/sn
+            lorenz(i,2) =sum(temp(1:i)*grid_k(1:i))/sn
         end do
         gini=sum(lorenz(:,1)-lorenz(:,2))/sum(lorenz(:,1))
     end subroutine sub_lorenz
@@ -766,14 +776,14 @@ contains
         enddo
     end subroutine sub_myinterp2
 
-
-    subroutine sub_stationaryDistrib(incomeGrid, invFunction2, statDist)
+    subroutine sub_stationaryDistrib(policyFn, invFunction2, statDist)
         !calculate the cumulative wealth distribution based on which shocks people get
         ! statDist: Each row is a capital level, each column is for a stochastic shock
         !I/O declarations
-        real(DP), dimension(capitalCount,shockCount), intent(in) :: incomeGrid,invFunction2 !asset grid, inv policy func
+        real(DP), dimension(capitalCount,shockCount), intent(in) :: policyFn,invFunction2 !asset grid, inv policy func
         real(DP), dimension(capitalCount,shockCount), intent(out) :: statDist !stationary dist (note: pdf, not cdf)
         real(DP), dimension(shockCount)::ss
+#ifndef HHSIMULATE
 
         ! misc vars
         integer(kind=4) :: i,j, counter
@@ -787,7 +797,7 @@ contains
         !setting initial guess to uniform dist across asset grid.
         do i=1,capitalCount
             do j=1,shockCount
-                statDist(i,j) = (incomeGrid(i,j) - incomeGrid(1,j))/(incomeGrid(capitalCount,j)-incomeGrid(1,j)) *&
+                statDist(i,j) = (grid_k(i) - grid_k(1))/(grid_k(capitalCount)-grid_k(1)) *&
                     dble(1.0_dp/shockCount)
             end do
         end do
@@ -795,13 +805,13 @@ contains
         f_n=statDist
         diff=100
 
-        do while((diff>1.0e-4) .and. (counter<5000))
+        do while((diff>1.0e-4) .and. (counter<MODEL_MAX_ITER))
 
             f_o=f_n
 
             do i=1,shockCount
                 call &
-                    sub_myinterp2(incomeGrid(:,i),f_o(:,i),invFunction(:,i),capitalCount,f_o_hat(:,i))
+                   sub_myinterp2(incomeGrid(:,i),f_o(:,i),invFunction(:,i),capitalCount,f_o_hat(:,i))
             end do
 
             do j=1,shockCount
@@ -813,8 +823,8 @@ contains
                         f_o_hat(i,j)=0.0_dp
                     else if (isnan(f_o_hat(i,j))) then
                         print *, "Error: f_o_hat is NAN. Counter:",counter," element: ", i, " shock: ",j
-                        print *,"incomeGrid"
-                        print *,incomeGrid(:,j)
+                        print *,"grid_k"
+                        print *,grid_k(:)
                         print *,"invFunction"
                         print *,invFunction(:,j)
                         print *,"f_o"
@@ -824,17 +834,17 @@ contains
                         call sub_modelStop("sub_stationaryDistrib")
                     end if
 
-                !add a test: if non-monotonic, fail
-                if(diff>f_o_hat(i,j)) then
-                    print *, "Error: Non-monotonic cdf function. Counter:",counter," element: ", i, " shock: ",j,&
-                                &" value_old: ",diff, " value_new: ",f_o_hat(i,j)
-                    print *,"f_o"
-                    print *,f_o(:,j)
-                    print *,"f_o_hat"
-                    print *,f_o_hat(:,j)
-                    call sub_modelStop("sub_stationaryDistrib")
-                end if
-                diff=f_o_hat(i,j)
+                    !add a test: if non-monotonic, fail
+                    if(diff>f_o_hat(i,j)) then
+                        print *, "Error: Non-monotonic cdf function. Counter:",counter," element: ", i, " shock: ",j,&
+                            &" value_old: ",diff, " value_new: ",f_o_hat(i,j)
+                        print *,"f_o"
+                        print *,f_o(:,j)
+                        print *,"f_o_hat"
+                        print *,f_o_hat(:,j)
+                        call sub_modelStop("sub_stationaryDistrib")
+                    end if
+                    diff=f_o_hat(i,j)
                 end do
             end do
 
@@ -858,10 +868,197 @@ contains
         call steadyState(ss)
         forall(j=1:shockCount) statDist(:,j) = ss(j)*statDist(:,j)
 
+#else
+        !in this section, we instead simulate the distribution. We can select the number
+        !of households to simulate using "numHouseholds"
 
-    end subroutine sub_stationaryDistrib
+        integer(I8B) :: i,j, k, counter, currentState, ipos
+        real(DP) :: diff, shock, currentAssets, slope
+        real(DP), dimension(numHouseholds,3) :: HHAssetsAndState,HHAssetsAndStateNew
+        integer(I8B), dimension(capitalCount,shockCount) :: hhInState, hhInStateNew,capitalMap
+        real(DP), dimension(shockCount,shockCount) :: cdf
+        logical :: mybreak = .false.
+        real(DP), dimension(capitalCount,shockCount) ::f_o, f_o_hat, f_n
+
+        print *,"simulation"
+        flush(6)
+
+        ! need cdf of transition matrix to give households shocks.
+        cdf(:,1)=transitionMatrix(:,1)
+        do i=2,shockCount-1
+            cdf(:,i)=sum(transitionMatrix(:,1:i),dim=2)
+        end do
+        cdf(:,shockCount)=1.0D0
+
+        !capitalMap indicates, for every element in policyFn, which gridPoint is it
+        !less than. We will need this to determine convergence
+        !so we have grid_k(k-1)<=policyFn(i,j)<grid_k(k)
+        do i=1,capitalCount
+            do j=1,shockCount
+                currentAssets=policyFn(i,j)
+                mybreak = .false.
+                k=1
+                do while( (k .le. capitalCount) .and. (mybreak .eqv. .false.))
+                    if(currentAssets<grid_k(k))then
+                        mybreak = .true.
+                    else
+                        k=k+1
+                    end if
+                end do
+
+                !check that we found one
+                if(mybreak .eqv. .false.)then
+                    print *,"Could not find gridpoint for ",currentAssets
+                    call sub_modelStop("sub_stationaryDistrib" )
+                end if
+                capitalMap(i,j)=k
+            end do
+        end do
+
+        i= rand(12345)
+
+        !setting initial guess to uniform dist across asset grid and shock type.
+        hhInState(1,:) = 1
+        hhInStateNew(1,:) = 0
+        do i=2,capitalCount-1
+            hhInState(i,:) = floor(&
+                &(grid_k(i)-grid_k(i-1))&
+                & / (grid_k(capitalCount)-grid_k(1))&
+                & * numHouseholds/DBLE(shockCount)&
+                & )
+            hhInStateNew(i,:) = 0
+        end do
+        hhInState(capitalCount,:) = 0
+        hhInStateNew(capitalCount,:) = 0
+        hhInState(capitalCount,:) = numHouseholds/DBLE(shockCount)-sum(hhInState,dim=1)
+        hhInState(capitalCount,shockCount) = 0
+        hhInState(capitalCount,shockCount) = numHouseholds-sum(hhInState)
+
+        !error check
+        do i=1,shockCount
+            if(hhInState(capitalCount,i)<0) then
+                print *,hhInState(:,i)
+                call sub_modelStop("sub_stationaryDistrib: Error in hhInState")
+            end if
+        end do
+
+        !
+        !initialize households
+        !
+        !use hhInState to put the wealth in each household
+        !put equal number of households in each state
+        counter = 0
+        do i=1,capitalCount
+            do  j = 1,shockCount
+                do k=1,hhInState(i,j)
+                    counter = counter + 1
+
+                    if (counter > numHouseholds) then
+                        print *,i,j,counter
+                        call sub_modelstop(&
+                            &"sub_stationaryDistrib: Iterating past numHouseholds.")
+                    end if
+
+                    HHAssetsAndState(counter,1)=grid_k(i)
+
+                    ! set shock level
+                    HHAssetsAndState(counter,2)=j
+
+                    !set capitalMap for current asset level
+                    HHAssetsAndState(counter,3)=i+1
+                end do
+            end do
+        end do
+
+        !
+        !from here on, we will iterate
+        !
+        counter = 0
+        diff=100.0D0
+
+        do while ((counter < MODEL_MAX_ITER) .and. (diff>toler))
+            counter = counter+1
+
+            !give each household a shock based on state
+            do i=1,numHouseholds
+
+                shock=rand(0)
+
+                !transition based on current state
+                currentAssets=HHAssetsAndState(i,1)
+                currentState=HHAssetsAndState(i,2)
+
+                j=0
+                mybreak = .false.
+                do while ((j<shockCount) .and. (mybreak .eqv. .false.))
+                    j=j+1
+
+                    if(shock<cdf(currentState,j)) then
+                        mybreak = .true.
+                    end if
+                end do
+
+                !make sure we found it
+                if(mybreak .eqv. .false.)then
+                    print *,"error with shock."
+                    call sub_modelstop("sub_stationaryDistrib")
+                end if
+
+                k=HHAssetsAndState(i,3)
+                if (k>capitalCount)then
+                    k=k-1
+                end if
+
+                !to find new assets, linearly interpolate between capital level at k
+                !and k+1 in the policyFn array, but at the new wealth level for next
+                !period
+                if(k==capitalCount) then
+                    slope=1
+                else
+                    slope = (currentAssets-grid_k(k))/(grid_k(k+1)-grid_k(k))
+                end if
+
+                HHAssetsAndStateNew(i,1) = policyFn(k,j)+slope*(policyFn(k+1,j)-policyFn(k,j))
+
+                !check
+                if(HHAssetsAndStateNew(i,1)>grid_k(capitalCount)) then
+                    print *, k,grid_k(k),currentAssets,grid_k(k+1),HHAssetsAndStateNew(i,1)
+                    call sub_modelstop(&
+                        &"sub_stationaryDistrib:newAssetLevel greater than max capital")
+                endif
+
+                HHAssetsAndStateNew(i,2) = j
+
+                !we add this household as being in the interval [ipos-1,ipos]
+                ipos=capitalMap(k,j)
+                hhInStateNew(ipos,j)=hhInStateNew(ipos,j)+1
+
+                !position in grid_k relating to current capital level
+                HHAssetsAndStateNew(i,3) = ipos
+
+            end do
+
+            !find the difference (as a % of total households)
+            ! this doesn't seem to converge, though with testing, gini index is close
+            ! what is convergence here?
+            diff=sum(abs(hhInStateNew-hhInState))/DBLE(numHouseholds)
+
+            if (mod(counter,1000)==0) then
+                print *,maxval(abs(hhInStateNew-hhInState)),maxloc(abs(hhInStateNew-hhInState))
+                print*,"sub_stationaryDistrib Iteration: ",counter, " diff: ",diff
+            end if
+
+            hhInState = hhInStateNew
+            hhInStateNew=0
+            f_o = f_o_hat
+            HHAssetsAndState=HHAssetsAndStateNew
+        end do
+
+    !okay, now we have the cdf
+    statDist = hhInState/DBLE(numHouseholds)
 #endif
-
+end subroutine sub_stationaryDistrib
+#endif
 END MODULE modelDefinition
 
 ! This module contains everything we neeed to perform a value function interation using the endogenous
@@ -1354,7 +1551,7 @@ contains
         do index_z = 1,n_tauchen
             call sub_myinterp1(kend(:,index_z),newguess(:,index_z), grid_k, length_grid_k, fnToSolve(:,index_z))
             call sub_myinterp1(kend(:,index_z),grid_k, grid_k, length_grid_k, g_k(:,index_z))
-!            call sub_myinterp1(kend(:,index_z),Cstar(:,index_z), grid_k, length_grid_k, g_c(:,index_z))
+        !            call sub_myinterp1(kend(:,index_z),Cstar(:,index_z), grid_k, length_grid_k, g_c(:,index_z))
         enddo
         g_i=oncapital
 #else
@@ -1460,7 +1657,7 @@ program main
     ! 3. Endogenous Grid algorithm
     !----------------------------------------------------------------
 
-    print *, 'Beginning the iteration of the value function with an initial linear guess '
+    print *, 'Beginning the iteration of the value function with an initial linear guess'
     print *, ' '
     flush(6)
 
@@ -1477,20 +1674,22 @@ program main
     a_max=45
     call sub_grid_generation(grid_k, a_min, a_max, 4.D0,1)
 #endif
-
     call initGuess(valueFn)
 
     !Here we call the subroutine to carry out the endogenous grid
     call sub_endogenize(valuefn,grid_k,y,transition,g_k,g_c)
 
+    print *, 'endogenize done'
+    print *, ' '
+    flush(6)
+
 #ifdef AIYAGARI
     allocate(distrib(length_grid_k,n_tauchen))
     allocate(giniFn(length_grid_k,2))
-    allocate(tempGrid(length_grid_k,n_tauchen))
-do i1=1,n_tauchen
-    tempGrid(:,i1)=grid_k(:)
-end do
-    call sub_lorenz(tempGrid,g_c,giniFn,giniVal,distrib)
+    print *, 'Lorenz'
+    print *, ' '
+    flush(6)
+    call sub_lorenz(valuefn,g_c,giniFn,giniVal,distrib)
     call vec2csv(grid_k,"assets.csv")
     call mat2csv(distrib,"cdfOfAssets.csv")
     call mat2csv(giniFn,"giniOfAssets.csv")
