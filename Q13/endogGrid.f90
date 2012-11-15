@@ -714,6 +714,7 @@ contains
         !                   1: the x values representing the cdf at each state
 
         !       2) gini - the actual gini value
+        !       3) statDistrib - the pdf for each capital level
         real(dp), dimension(capitalCount,shockCount),intent(in) :: policyFn,invFn
         real(dp), dimension(capitalCount,2),intent(out) :: lorenz
         real(dp), intent(out) :: gini
@@ -1056,6 +1057,11 @@ contains
 
     !okay, now we have the cdf
     statDist = hhInState/DBLE(numHouseholds)
+
+    !we need to scale to the steady state
+    call steadyState(ss)
+    forall(j=1:shockCount) statDist(:,j) = ss(j)/sum(statDist(:,j))*statDist(:,j)
+
 #endif
 end subroutine sub_stationaryDistrib
 #endif
@@ -1691,7 +1697,7 @@ program main
     flush(6)
     call sub_lorenz(valuefn,g_c,giniFn,giniVal,distrib)
     call vec2csv(grid_k,"assets.csv")
-    call mat2csv(distrib,"cdfOfAssets.csv")
+    call mat2csv(distrib,"pdfOfAssets.csv")
     call mat2csv(giniFn,"giniOfAssets.csv")
     print *,"GiniVal: ",giniVal
 #endif
