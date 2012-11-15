@@ -1045,7 +1045,6 @@ contains
             diff=sum(abs(hhInStateNew-hhInState))/DBLE(numHouseholds)
 
             if (mod(counter,1000)==0) then
-                print *,maxval(abs(hhInStateNew-hhInState)),maxloc(abs(hhInStateNew-hhInState))
                 print*,"sub_stationaryDistrib Iteration: ",counter, " diff: ",diff
             end if
 
