@@ -1,6 +1,6 @@
 !#define NEOCLASSICAL
 #define AIYAGARI
-#define HHSIMULATE
+!#define HHSIMULATE
 MODULE nrtype
     INTEGER, PARAMETER :: I8B = KIND(1_8)
     INTEGER, PARAMETER :: I4B = SELECTED_INT_KIND(9)
@@ -812,7 +812,7 @@ contains
 
             do i=1,shockCount
                 call &
-                   sub_myinterp2(incomeGrid(:,i),f_o(:,i),invFunction(:,i),capitalCount,f_o_hat(:,i))
+                   sub_myinterp2(grid_k(:),f_o(:,i),invFunction(:,i),capitalCount,f_o_hat(:,i))
             end do
 
             do j=1,shockCount
@@ -1044,7 +1044,7 @@ contains
             ! what is convergence here?
             diff=sum(abs(hhInStateNew-hhInState))/DBLE(numHouseholds)
 
-            if (mod(counter,1000)==0) then
+            if (mod(counter,100)==0) then
                 print*,"sub_stationaryDistrib Iteration: ",counter, " diff: ",diff
             end if
 
