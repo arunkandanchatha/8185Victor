@@ -1677,7 +1677,7 @@ program main
 #ifdef AIYAGARI
     a_min=0.0
     a_max=45
-    call sub_grid_generation(grid_k, a_min, a_max, 4.D0,1)
+    call sub_grid_generation(grid_k, a_min, a_max, 3.D0,1)
 #endif
     call initGuess(valueFn)
 
